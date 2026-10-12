@@ -13,9 +13,21 @@ description: 每日检查 Simon 六因子尾部风险择时模型，增量更新
 2. 默认运行：
 
 ```bash
-/Users/a/.local/pipx/venvs/khquant/bin/python \
-  /Users/a/.codex/skills/simon-tail-risk-daily/scripts/run_daily.py
+python3 /Users/a/.codex/skills/simon-tail-risk-daily/scripts/run_daily.py
 ```
+
+入口会先从 KhQuant 的 Tushare 配置读取凭据并增量刷新数据；Tushare
+失败时，固定组合和标准指数可回退到已配置的同花顺金融数据服务。新增的
+固定组合/交易所指数日线同时写入 KhQuant 的 DarkDB（`duckdb_data_path`
+对应的数据目录）。六因子引擎只读取同一事务提交的
+`/Users/a/khquant/data/simon_tail_risk_inputs.duckdb` 快照，避免从多个单证券
+文件读到不同截止日。完整市场广度仍以 Tushare 的逐交易日 `daily` 为主，
+因为同花顺历史接口是单标的接口。
+
+首次运行时，仓库中的一年 CSV 仅用于初始化这个 DuckDB 快照；之后不再读取或
+更新日报 CSV。CSV 只保留为迁移材料和最终信号报告输出。快照包含
+`market`、`indices`、`industries`、`portfolio`、`weights`、`external` 六张输入表，
+带主键覆盖、事务提交、行数和日期范围审计。
 
 3. 用户指定日期时传入 `--date YYYY-MM-DD`。只有用户明确要求离线或网络不可用时才加 `--no-refresh`；此时必须显著说明数据截止日。
 4. 保留脚本的原始结论，不凭主观判断改分。若需解释公式，读取 [model-definition.md](references/model-definition.md)。

@@ -23,6 +23,7 @@ from gann.multiclock import (
     generate_wave_duration_windows,
     multiclock_density,
 )
+from gann.time_points import select_time_key_points
 from gann.windows import generate_time_windows
 from gann.zigzag import confirmed_zigzag
 
@@ -67,18 +68,28 @@ def standardize_natural(windows: pd.DataFrame) -> pd.DataFrame:
 def write_summary(
     output: Path,
     as_of: pd.Timestamp,
-    density: pd.DataFrame,
+    key_points: pd.DataFrame,
     windows: pd.DataFrame,
     confirmation: pd.DataFrame,
     calendar_note: str,
 ) -> None:
-    future = density.loc[density["date"] >= as_of - pd.Timedelta(days=3)].copy()
-    dense = future.loc[(future["independent_family_count"] >= 2) | (future["window_count"] >= 3)].head(20)
-    dense_lines = [
-        f"| {row.date.date()} | {row.window_count} | {row.source_family_count} | "
-        f"{row.independent_family_count} | {row.source_families or '—'} | {row.causal_families or '—'} | {row.session_status} |"
-        for row in dense.itertuples(index=False)
-    ] or ["| — | 0 | 0 | 0 | 暂无密集窗口 | — | — |"]
+    def cell(value: str) -> str:
+        return str(value).replace("|", "、") or "—"
+
+    calendar_labels = {
+        "observed": "已观测交易日",
+        "exchange_calendar": "交易所交易日",
+        "natural_nontrading_day": "自然日节点/非交易日",
+        "natural_calendar_unverified": "自然日节点/交易状态未核实",
+    }
+    key_lines = [
+        f"| {row.date.date()} | {row.priority_rank} | {row.window_count} | {row.source_family_count} | "
+        f"{row.independent_family_count} | {row.center_member_count} | {cell(row.source_families)} | "
+        f"{cell(row.causal_families)} | {calendar_labels.get(row.session_status, row.session_status)} | "
+        f"{cell(row.center_window_ids)} | {cell(row.center_anchors)} | {cell(row.center_confirm_dates)} |"
+        for row in key_points.itertuples(index=False)
+    ] or ["| — | — | 0 | 0 | 0 | 0 | 暂无符合筛选条件的关键时间点 | — | — | — | — | — |"]
+    wave_note = "已提供审定波浪段落。" if windows["source_family"].eq("wave_duration").any() else "波浪等时时钟缺失：未提供有效审定段落，不虚构来源。"
     recent = confirmation.loc[confirmation["date"] <= as_of].tail(10)
     recent_lines = []
     for row in recent.to_dict(orient="records"):
@@ -108,11 +119,17 @@ def write_summary(
 数据截至：{as_of.date()}  
 未来交易日历：{calendar_note}
 
-## 时间密集窗口
+## 重要关键时间点
 
-| 日期 | 窗口数 | 时钟种类 | 独立因果来源 | 来源族 | 因果族 | 日历状态 |
-|---|---:|---:|---:|---|---|---|
-{chr(10).join(dense_lines)}
+| 关键日期 | 展示优先级 | 主容差成员数 | 时钟种类 | 独立因果来源 | 同日中心成员数 | 来源族 | 因果族 | 日历状态 | 原始中心来源 | 中心起算锚点 | 锚点确认日 |
+|---|---:|---:|---:|---:|---:|---|---|---|---|---|---|
+{chr(10).join(key_lines)}
+
+仅展示冻结锚点的原始中心日，按保守因果来源、时钟种类、成员数及同日中心数排序后去重；完整容差起止和覆盖账本仅供审计。展示优先级不是预测概率，关键日为观察节点，不保证当日变盘。
+
+{wave_note}
+
+确认条件：到达关键日后，仍须分别检查价格反转、宽度、跨指数及周线确认；未确认则记录“时间到而价格未确认”，不据日期单独判断涨跌。
 
 窗口数不能直接相加为置信度。同一来源族内的多个周期、比例或锚点只算一个来源族；共享价格拐点机制的自然日/交易日与5%/2.5%时钟统一算一个独立因果来源。
 
@@ -204,6 +221,7 @@ def main() -> int:
     for column in ("anchor_date", "confirm_date", "center_date", "start_date", "end_date"):
         windows[column] = pd.to_datetime(windows[column])
     density = multiclock_density(sessions, windows)
+    key_points, key_members = select_time_key_points(windows, sessions, as_of, projection_end)
 
     breadth = pd.read_csv(args.breadth) if args.breadth else None
     peers = pd.read_csv(args.peer_indices) if args.peer_indices else None
@@ -213,8 +231,10 @@ def main() -> int:
     local.to_csv(args.output / "local_pivots_2_5pct.csv", index=False)
     windows.to_csv(args.output / "multiclock_windows.csv", index=False)
     density.to_csv(args.output / "multiclock_density.csv", index=False)
+    key_points.to_csv(args.output / "time_key_points.csv", index=False)
+    key_members.to_csv(args.output / "time_key_point_members.csv", index=False)
     confirmation.to_csv(args.output / "daily_confirmation_ledger.csv", index=False)
-    write_summary(args.output / "multiclock_summary.md", as_of, density, windows, confirmation, calendar_note)
+    write_summary(args.output / "multiclock_summary.md", as_of, key_points, windows, confirmation, calendar_note)
     print(f"Wrote multi-clock ledger to {args.output.resolve()}")
     return 0
 

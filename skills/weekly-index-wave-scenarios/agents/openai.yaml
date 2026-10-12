@@ -1,4 +1,4 @@
 interface:
   display_name: "周线波浪情景"
-  short_description: "日线结构、节奏量价与空间共振驱动的周线波浪情景"
-  default_prompt: "Use $weekly-index-wave-scenarios to analyse an A-share index price-first: establish parent waves, audit daily three/five-wave morphology and rhythm/volume, then integrate Fibonacci or Gann spatial resonance, breadth, leaders and events into a 4–12 week scenario."
+  short_description: "多时钟、极值确认分离与跨指数验证的周线波浪情景"
+  default_prompt: "Use $weekly-index-wave-scenarios to analyse an A-share index price-first: establish parent waves, audit daily three/five-wave morphology and rhythm/volume, then build a causal multi-clock ledger that separates extreme, price, breadth, cross-index and weekly confirmation before integrating spatial resonance, leaders and verified events into a 4–12 week scenario."

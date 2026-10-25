@@ -82,6 +82,13 @@ def premarket_foresight_pack() -> dict:
             },
             "information_content": {"volume": "weak", "leadership": "uninformative"},
             "leadership": {"state": "uninformative"},
+            "structure_memory": {
+                "recent_path_pressure": {
+                    "status": "not_met",
+                    "subtype": "none",
+                    "detail": "测试状态没有破位未收复或支撑附近弱收盘",
+                }
+            },
             "gann_result": {
                 "target_time_window": {
                     "status": "inside_active_natural_window",
@@ -139,11 +146,11 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(filtered["date"].tolist(), [pd.Timestamp("2026-10-21"), pd.Timestamp("2026-10-22")])
 
     def test_chinese_report_header_and_decision_card_are_gate_compatible(self) -> None:
-        report = """
+        report = f"""
 | 项目 | 内容 |
 |---|---|
 | 预测类型 | 历史回放 |
-| 规则版本 | 2026-10-25.6 |
+| 规则版本 | {common.RULESET_VERSION} |
 | 决策阶段 | 盘前 |
 | 预判截点 | 2026-09-22 09:00:00+08:00 |
 | 特征截点 | 2026-09-22 09:00:00+08:00 |
@@ -152,13 +159,15 @@ class ContractTests(unittest.TestCase):
 
 | 决策项目 | 决策内容 |
 |---|---|
-| 结构偏向 | 偏空 |
+| 结构偏向 | 看空 |
 | 窗口状态 | 未决 |
-| 事件日方向 | 中性 |
+| 事件日方向 | 震荡 |
 | 执行状态 | 只减不加 |
 | 操作偏向 | 只减不加 |
 | 是否弃权 | 否 |
 | 置信度 | 0.55 |
+| 权重领先幅度 | 8.0个百分点 |
+| 权重确信度 | 正常确信 |
 | 决策区间 | 3958.03-3992.55 |
 | 失效条件 | 收盘接受3992.55上方或跌破3916.49 |
 | 下一确认 | 向下3916.49；向上3992.55 |
@@ -183,6 +192,8 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(common.normalize_report_value("risk_state", "观察"), "watch")
         self.assertEqual(common.normalize_report_value("execution_state", "观察"), "observe")
         self.assertEqual(common.normalize_report_value("action_bias", "停止操作"), "stop")
+        self.assertEqual(common.normalize_report_value("direction", "震荡"), "neutral")
+        self.assertEqual(common.normalize_report_value("structural_bias", "看空"), "bearish")
 
     def test_chinese_information_and_leadership_tables_are_gate_compatible(self) -> None:
         report = """
@@ -220,7 +231,7 @@ class ContractTests(unittest.TestCase):
         bad_report = """
 | 情景 | 完整路径预测 | 目标 |
 |---|---|---|
-| 关键位区间测试 | 9月22日测试三千九百五十八点零三→上涨百分之四点二九→五个完整交易日后回落 | 三千九百九十二点五五 |
+| 区间震荡 | 9月22日测试三千九百五十八点零三→上涨百分之四点二九→五个完整交易日后回落 | 三千九百九十二点五五 |
 """
         checks: list[dict] = []
         direction_gate.check_numeric_display(bad_report, checks)
@@ -230,7 +241,7 @@ class ContractTests(unittest.TestCase):
         good_report = """
 | 情景 | 完整路径预测 | 目标 |
 |---|---|---|
-| 关键位区间测试 | 9月22日测试3958.03→上涨4.29%→5个完整交易日后回落 | 3992.55 |
+| 区间震荡 | 9月22日测试3958.03→上涨4.29%→5个完整交易日后回落 | 3992.55 |
 
 下一交易日复查，同一时点继续观察；第四浪与丙二反弹作为结构名称保留。
 """
@@ -266,40 +277,40 @@ class ContractTests(unittest.TestCase):
 
     def test_scenarios_require_explicit_direction(self) -> None:
         scenarios = [
-            {"name": "tail_extreme", "direction": "bearish", "weight": 0.05, "lower": 0, "upper": 3500},
-            {"name": "trend_continuation", "direction": "bearish", "weight": 0.30, "lower": 3500, "upper": 3602.15},
-            {"name": "key_level_test", "direction": "neutral", "weight": 0.40, "lower": 3602.15, "upper": 3702.44},
-            {"name": "breakdown_or_breakout", "direction": "bullish", "weight": 0.25, "lower": 3702.44, "upper": 10000},
+            {"name": "tail_extreme_down", "direction": "bearish", "weight": 0.05, "lower": 0, "upper": 3500},
+            {"name": "downside_continuation", "direction": "bearish", "weight": 0.30, "lower": 3500, "upper": 3602.15},
+            {"name": "range_oscillation", "direction": "neutral", "weight": 0.40, "lower": 3602.15, "upper": 3702.44},
+            {"name": "upside_breakout", "direction": "bullish", "weight": 0.25, "lower": 3702.44, "upper": 10000},
         ]
         self.assertEqual(common.validate_scenarios(scenarios), [])
         broken = [dict(row) for row in scenarios]
         broken[3].pop("direction")
         self.assertTrue(any("direction" in error for error in common.validate_scenarios(broken)))
 
-    def test_single_scenario_above_half_is_rejected(self) -> None:
+    def test_single_scenario_above_half_is_allowed(self) -> None:
         scenarios = [
-            {"name": "tail_extreme", "direction": "bearish", "weight": 0.05, "lower": 0, "upper": 3500},
-            {"name": "trend_continuation", "direction": "bearish", "weight": 0.55, "lower": 3500, "upper": 3602.15},
-            {"name": "key_level_test", "direction": "neutral", "weight": 0.20, "lower": 3602.15, "upper": 3702.44},
-            {"name": "breakdown_or_breakout", "direction": "bullish", "weight": 0.20, "lower": 3702.44, "upper": 10000},
+            {"name": "tail_extreme_down", "direction": "bearish", "weight": 0.05, "lower": 0, "upper": 3500},
+            {"name": "downside_continuation", "direction": "bearish", "weight": 0.55, "lower": 3500, "upper": 3602.15},
+            {"name": "range_oscillation", "direction": "neutral", "weight": 0.20, "lower": 3602.15, "upper": 3702.44},
+            {"name": "upside_breakout", "direction": "bullish", "weight": 0.20, "lower": 3702.44, "upper": 10000},
         ]
-        self.assertTrue(any("50%" in error for error in common.validate_scenarios(scenarios)))
+        self.assertEqual(common.validate_scenarios(scenarios), [])
 
     def test_overlapping_scenarios_are_rejected(self) -> None:
         scenarios = [
-            {"name": "tail_extreme", "direction": "bearish", "weight": 0.05, "lower": 0, "upper": 3500},
-            {"name": "trend_continuation", "direction": "bearish", "weight": 0.30, "lower": 3499, "upper": 3602.15},
-            {"name": "key_level_test", "direction": "neutral", "weight": 0.40, "lower": 3602.15, "upper": 3702.44},
-            {"name": "breakdown_or_breakout", "direction": "bullish", "weight": 0.25, "lower": 3702.44, "upper": 10000},
+            {"name": "tail_extreme_down", "direction": "bearish", "weight": 0.05, "lower": 0, "upper": 3500},
+            {"name": "downside_continuation", "direction": "bearish", "weight": 0.30, "lower": 3499, "upper": 3602.15},
+            {"name": "range_oscillation", "direction": "neutral", "weight": 0.40, "lower": 3602.15, "upper": 3702.44},
+            {"name": "upside_breakout", "direction": "bullish", "weight": 0.25, "lower": 3702.44, "upper": 10000},
         ]
         self.assertTrue(any("boundary" in error for error in common.validate_scenarios(scenarios)))
 
     def test_scorecard_neutral_is_abstention(self) -> None:
         scenarios = [
-            {"name": "tail_extreme", "direction": "bearish", "weight": 0.05, "lower": 0, "upper": 3500},
-            {"name": "trend_continuation", "direction": "bearish", "weight": 0.30, "lower": 3500, "upper": 3602.15},
-            {"name": "key_level_test", "direction": "neutral", "weight": 0.40, "lower": 3602.15, "upper": 3702.44},
-            {"name": "breakdown_or_breakout", "direction": "bullish", "weight": 0.25, "lower": 3702.44, "upper": 10000},
+            {"name": "tail_extreme_down", "direction": "bearish", "weight": 0.05, "lower": 0, "upper": 3500},
+            {"name": "downside_continuation", "direction": "bearish", "weight": 0.30, "lower": 3500, "upper": 3602.15},
+            {"name": "range_oscillation", "direction": "neutral", "weight": 0.40, "lower": 3602.15, "upper": 3702.44},
+            {"name": "upside_breakout", "direction": "bullish", "weight": 0.25, "lower": 3702.44, "upper": 10000},
         ]
         record = {
             "target_date": "2026-10-23",
@@ -316,7 +327,7 @@ class ContractTests(unittest.TestCase):
         result = scorecard.settle(record, closes)
         self.assertEqual(result["expected_direction"], "neutral")
         self.assertIsNone(result["direction_hit"])
-        self.assertEqual(result["realized_branch"], "key_level_test")
+        self.assertEqual(result["realized_branch"], "range_oscillation")
         self.assertTrue(result["top_weight_hit"])
 
     def test_scorecard_scores_preemptive_defense_from_open(self) -> None:
@@ -422,12 +433,12 @@ class ContractTests(unittest.TestCase):
         direction_gate.check_future_function("", pack, checks)
         self.assertEqual(checks[-1]["status"], "fail")
 
-    def test_breakout_direction_is_explicit_not_name_based(self) -> None:
+    def test_scenario_directions_use_three_state_direction(self) -> None:
         scenarios = [
-            {"name": "tail_extreme", "direction": "bearish", "weight": 0.05, "lower": 0, "upper": 3400, "close_condition": "close <3400"},
-            {"name": "trend_continuation", "direction": "bearish", "weight": 0.20, "lower": 3400, "upper": 3600, "close_condition": "close <3600"},
-            {"name": "key_level_test", "direction": "neutral", "weight": 0.30, "lower": 3600, "upper": 3700, "close_condition": "close in band"},
-            {"name": "breakdown_or_breakout", "direction": "bearish", "weight": 0.45, "lower": 3700, "upper": 5000, "close_condition": "close >3700"},
+            {"name": "tail_extreme_down", "direction": "bearish", "weight": 0.05, "lower": 0, "upper": 3400, "close_condition": "close <3400"},
+            {"name": "downside_continuation", "direction": "bearish", "weight": 0.20, "lower": 3400, "upper": 3600, "close_condition": "close <3600"},
+            {"name": "range_oscillation", "direction": "neutral", "weight": 0.30, "lower": 3600, "upper": 3700, "close_condition": "close in band"},
+            {"name": "upside_breakout", "direction": "bullish", "weight": 0.45, "lower": 3700, "upper": 5000, "close_condition": "close >3700"},
         ]
         for row in scenarios:
             row["path_forecast"] = valid_path_forecast()
@@ -441,7 +452,7 @@ class ContractTests(unittest.TestCase):
             "symbol": "000001.SH",
             "structural_bias": "bearish",
             "window_state": "unresolved",
-            "direction": "bearish",
+            "direction": "bullish",
             "execution_state": "wait_for_confirmation",
             "action_bias": "reduce_only",
             "abstain": False,
@@ -450,6 +461,8 @@ class ContractTests(unittest.TestCase):
             "interval_convention": "lower_inclusive_upper_exclusive",
             "scenarios": scenarios,
             "targets": [{"name": "test", "level": 3600}],
+            "llm_judgement": {},
+            "judgement_source": "llm",
             "execution_overlay": execution_overlay.build_overlay(
                 overlay_pack("premarket"), None,
                 pressure_low=3690.0, pressure_high=3700.0, support=3600.0,
@@ -463,7 +476,7 @@ class ContractTests(unittest.TestCase):
         report = """
 structural_bias : bearish
 window_state : unresolved
-direction : bearish
+direction : bullish
 execution_state : wait_for_confirmation
 action_bias : reduce_only
 abstain : false
@@ -472,6 +485,23 @@ confidence : 0.5
         checks: list[dict] = []
         direction_gate.check_forecast_contract(report, pack, forecast, checks)
         self.assertEqual(checks[-1]["status"], "pass")
+
+        contradictory = [dict(row) for row in scenarios]
+        contradictory[1]["direction"] = "neutral"
+        self.assertTrue(
+            any(
+                "downside_continuation direction must be bearish" in error
+                for error in common.validate_scenarios(contradictory)
+            )
+        )
+        contradictory = [dict(row) for row in scenarios]
+        contradictory[3]["direction"] = "bearish"
+        self.assertTrue(
+            any(
+                "upside_breakout direction must be bullish" in error
+                for error in common.validate_scenarios(contradictory)
+            )
+        )
 
     def test_execution_overlay_defensive_requires_pressure_and_participation(self) -> None:
         pack = overlay_pack()
@@ -606,6 +636,80 @@ confidence : 0.5
         self.assertEqual(accepted["risk_state"], "offensive")
         self.assertEqual(accepted["execution_bias"], "add_only_after_confirmation")
 
+    def test_external_risk_shock_requires_asia_confirmation(self) -> None:
+        pack = premarket_foresight_pack()
+        pack["external_market"].update(
+            {
+                "SOX": {"pct_chg": -4.30},
+                "IXIC": {"pct_chg": -1.88},
+                "NDX": {"pct_chg": -2.02},
+                "N225": {"pct_chg": -1.28},
+                "KS11": {"pct_chg": -5.59},
+                "TWII": {"pct_chg": -0.50},
+                "XIN9": {"pct_chg": -0.20},
+            }
+        )
+        pack["structure_memory"]["recent_path_pressure"] = {
+            "status": "met",
+            "subtype": "weak_close_near_support",
+            "detail": "收盘位于日振幅低位并接近支撑防线",
+        }
+        overlay = execution_overlay.build_overlay(
+            pack,
+            None,
+            pressure_low=3958.03,
+            pressure_high=3992.55,
+            support=3916.49,
+        )
+        evidence = next(
+            row for row in overlay["setup_evidence"] if row["name"] == "external_extreme"
+        )
+        self.assertEqual(overlay["metrics"]["external_state"], "risk_off_shock")
+        self.assertEqual(evidence["status"], "met")
+        self.assertEqual(overlay["risk_state"], "preemptive_defensive")
+
+        hard_combo = json.loads(json.dumps(pack))
+        hard_combo["gann_result"]["target_time_window"] = {
+            "status": "不在已确认关键时间点",
+            "active_window": "",
+        }
+        hard_combo["information_content"] = {
+            "volume": "uninformative",
+            "leadership": "uninformative",
+        }
+        hard_combo["leadership"] = {"state": "uninformative"}
+        overlay = execution_overlay.build_overlay(
+            hard_combo,
+            None,
+            pressure_low=3400.0,
+            pressure_high=3500.0,
+            support=3800.0,
+        )
+        self.assertEqual(overlay["metrics"]["setup_score"], 3)
+        self.assertEqual(overlay["setup_state"], "risk_zone_euphoria")
+        self.assertEqual(overlay["risk_state"], "preemptive_defensive")
+
+        unconfirmed = premarket_foresight_pack()
+        unconfirmed["external_market"].update(
+            {
+                "SOX": {"pct_chg": -4.30},
+                "IXIC": {"pct_chg": -1.88},
+                "N225": {"pct_chg": -1.28},
+            }
+        )
+        overlay = execution_overlay.build_overlay(
+            unconfirmed,
+            None,
+            pressure_low=3958.03,
+            pressure_high=3992.55,
+            support=3916.49,
+        )
+        evidence = next(
+            row for row in overlay["setup_evidence"] if row["name"] == "external_extreme"
+        )
+        self.assertEqual(overlay["metrics"]["external_state"], "risk_off_unconfirmed")
+        self.assertEqual(evidence["status"], "unknown")
+
     def test_unknown_setup_evidence_is_not_counted_as_met(self) -> None:
         pack = premarket_foresight_pack()
         pack["information_content"] = {"volume": "uninformative", "leadership": "uninformative"}
@@ -625,6 +729,413 @@ confidence : 0.5
         self.assertEqual(overlay["metrics"]["setup_score"], 4)
         self.assertEqual(overlay["metrics"]["setup_unknown_checks"], 1)
         self.assertIn("premarket.evidence.confirmation_deficit", overlay["data_gaps"])
+
+    def test_structure_memory_tracks_unreclaimed_break(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            dates = pd.date_range("2026-09-01", periods=8, freq="B")
+            closes = [101, 100.5, 100.2, 99.2, 98.8, 98.4, 98.1, 97.9]
+            bars = pd.DataFrame(
+                {
+                    "date": dates,
+                    "open": [value + 0.3 for value in closes],
+                    "high": [value + 0.8 for value in closes],
+                    "low": [value - 0.8 for value in closes],
+                    "close": closes,
+                    "volume": [1000] * len(dates),
+                    "amount": [10000] * len(dates),
+                }
+            )
+            bars.to_csv(root / "index.csv", index=False)
+            pd.DataFrame(
+                [
+                    {
+                        "level": 100,
+                        "role": "support_defense",
+                        "source_report": "20260901_report",
+                    },
+                    {
+                        "level": 103,
+                        "role": "pressure_defense",
+                        "source_report": "20260901_report",
+                    },
+                ]
+            ).to_csv(root / "levels.csv", index=False)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "structure_memory.py"),
+                    "--index-daily",
+                    str(root / "index.csv"),
+                    "--previous-levels",
+                    str(root / "levels.csv"),
+                    "--target-date",
+                    "2026-09-11",
+                    "--asof",
+                    "2026-09-10",
+                    "--available-at",
+                    "2026-09-10T18:00:00+08:00",
+                    "--output",
+                    str(root / "memory.json"),
+                ],
+                cwd=SCRIPT_DIR,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            memory = json.loads((root / "memory.json").read_text(encoding="utf-8"))
+            self.assertEqual(memory["broken_unreclaimed_count"], 1)
+            self.assertEqual(memory["supports"][0]["status"], "broken_unreclaimed")
+            self.assertEqual(memory["recent_path_pressure"]["status"], "met")
+            self.assertEqual(
+                memory["recent_path_pressure"]["subtype"], "break_unreclaimed"
+            )
+
+    def test_structure_memory_tracks_repeated_pressure_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            dates = pd.date_range("2026-09-01", periods=10, freq="B")
+            bars = pd.DataFrame(
+                {
+                    "date": dates,
+                    "open": [100.0] * 7 + [101.0] * 3,
+                    "high": [100.5] * 7 + [102.5] * 3,
+                    "low": [99.0] * 10,
+                    "close": [100.0] * 7 + [101.2] * 3,
+                    "volume": [1000] * 10,
+                    "amount": [10000] * 7 + [14000] * 3,
+                }
+            )
+            bars.to_csv(root / "index.csv", index=False)
+            pd.DataFrame(
+                [
+                    {
+                        "level": 101.5,
+                        "role": "pressure_band_anchor",
+                        "source_report": "20260901_report",
+                        "band_id": "pressure_band_1",
+                    },
+                    {
+                        "level": 103.0,
+                        "role": "pressure_defense",
+                        "source_report": "20260901_report",
+                        "band_id": "pressure_band_1",
+                    },
+                ]
+            ).to_csv(root / "levels.csv", index=False)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "structure_memory.py"),
+                    "--index-daily",
+                    str(root / "index.csv"),
+                    "--previous-levels",
+                    str(root / "levels.csv"),
+                    "--target-date",
+                    "2026-09-16",
+                    "--asof",
+                    "2026-09-14",
+                    "--available-at",
+                    "2026-09-14T18:00:00+08:00",
+                    "--output",
+                    str(root / "memory.json"),
+                ],
+                cwd=SCRIPT_DIR,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            memory = json.loads((root / "memory.json").read_text(encoding="utf-8"))
+            nearest = memory["pressure_attempt_memory"]["nearest"]
+            self.assertEqual(nearest["anchor_level"], 101.5)
+            self.assertEqual(nearest["defense_level"], 103.0)
+            self.assertEqual(nearest["test_count"], 3)
+            self.assertEqual(nearest["failed_close_count"], 3)
+            self.assertEqual(nearest["consecutive_failed_tests"], 3)
+            self.assertEqual(nearest["status"], "repeated_failure")
+
+    def test_scenario_weights_penalize_repeated_failure_and_wide_range(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            pack = {
+                "target_date": "2026-10-15",
+                "state_inputs": {
+                    "weekly_regime": "down",
+                    "funding_state": "neutral",
+                    "breadth_state": "neutral",
+                    "data_asof": "2026-10-14",
+                    "available_at": "2026-10-14T18:00:00+08:00",
+                },
+                "structure_memory": {
+                    "recent_path_pressure": {
+                        "status": "not_met",
+                        "subtype": "none",
+                        "detail": "没有新增破位",
+                    },
+                    "nearest_support": {"level": 3700.0},
+                    "nearest_pressure": {"level": 3800.0},
+                    "atr14": 20.0,
+                    "support_distance_atr": 1.0,
+                    "reclaimed_count": 0,
+                    "pressure_attempt_memory": {
+                        "lookback_sessions": 10,
+                        "nearest": {
+                            "band_id": "pressure_band_1",
+                            "test_count": 5,
+                            "failed_close_count": 4,
+                            "consecutive_failed_tests": 3,
+                            "last_test_status": "failed",
+                            "status": "repeated_failure",
+                        },
+                    },
+                    "data_gaps": [],
+                },
+                "gann_result": {
+                    "target_time_window": {"status": "不在已确认关键时间点"}
+                },
+            }
+            (root / "pack.json").write_text(
+                json.dumps(pack, ensure_ascii=False), encoding="utf-8"
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "scenario_weights.py"),
+                    "--pack",
+                    str(root / "pack.json"),
+                    "--output",
+                    str(root / "weights.json"),
+                ],
+                cwd=SCRIPT_DIR,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            weighted = json.loads((root / "weights.json").read_text(encoding="utf-8"))
+            names = {row["name"] for row in weighted["adjustments"]}
+            self.assertIn("repeated_pressure_failure", names)
+            self.assertIn("wide_range_penalty", names)
+            self.assertEqual(weighted["range_width_atr"], 5.0)
+            self.assertGreater(weighted["range_width_penalty"], 0)
+            self.assertLess(
+                weighted["weights"]["upside_breakout"],
+                weighted["baseline_weights"]["upside_breakout"],
+            )
+
+    def test_bounded_scenario_weights_react_to_unreclaimed_break(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            pack = {
+                "target_date": "2026-09-28",
+                "state_inputs": {
+                    "weekly_regime": "down",
+                    "funding_state": "deleveraging",
+                    "breadth_state": "deteriorating",
+                    "data_asof": "2026-09-24",
+                    "available_at": "2026-09-24T18:00:00+08:00",
+                },
+                "structure_memory": {
+                    "recent_path_pressure": {
+                        "status": "met",
+                        "subtype": "break_unreclaimed",
+                        "detail": "support 3896.62 broken and not reclaimed",
+                    },
+                    "support_distance_atr": 0.2,
+                    "reclaimed_count": 0,
+                    "data_gaps": [],
+                },
+                "gann_result": {
+                    "target_time_window": {"status": "不在已确认关键时间点"}
+                },
+            }
+            (root / "pack.json").write_text(
+                json.dumps(pack, ensure_ascii=False), encoding="utf-8"
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "scenario_weights.py"),
+                    "--pack",
+                    str(root / "pack.json"),
+                    "--output",
+                    str(root / "weights.json"),
+                ],
+                cwd=SCRIPT_DIR,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            weighted = json.loads((root / "weights.json").read_text(encoding="utf-8"))
+            self.assertAlmostEqual(sum(weighted["weights"].values()), 1.0, places=6)
+            self.assertEqual(weighted["top_scenario"], "downside_continuation")
+            self.assertEqual(
+                weighted["adjustments"][0]["name"], "broken_support_unreclaimed"
+            )
+
+    def test_code_weights_are_baseline_reference_only(self) -> None:
+        weights = {
+            "downside_continuation": 0.40,
+            "range_oscillation": 0.30,
+            "upside_breakout": 0.20,
+            "tail_extreme_down": 0.10,
+        }
+        pack = {
+            "scenario_weighting": {
+                "role": "baseline_reference",
+                "weights": weights,
+                "confidence_margin": 0.10,
+                "low_confidence": False,
+            }
+        }
+        checks: list[dict] = []
+        direction_gate.check_scenario_weighting(pack, checks)
+        self.assertEqual(checks[-1]["status"], "pass")
+
+    def test_gate_accepts_llm_final_judgement(self) -> None:
+        scenarios = [
+            {"name": "tail_extreme_down", "direction": "bearish", "weight": 0.10, "lower": 0, "upper": 3400},
+            {"name": "downside_continuation", "direction": "bearish", "weight": 0.40, "lower": 3400, "upper": 3600},
+            {"name": "range_oscillation", "direction": "neutral", "weight": 0.30, "lower": 3600, "upper": 3700},
+            {"name": "upside_breakout", "direction": "bullish", "weight": 0.20, "lower": 3700, "upper": 5000},
+        ]
+        for row in scenarios:
+            row["close_condition"] = "收盘位于声明区间"
+            row["path_forecast"] = valid_path_forecast()
+        judgement = {
+            "source": "llm",
+            "target_date": "2026-10-23",
+            "structural_bias": "bearish",
+            "window_state": "unresolved",
+            "direction": "bearish",
+            "execution_state": "reduce_only",
+            "execution_action": "reduce_only",
+            "risk_state": "preemptive_defensive",
+            "abstain": False,
+            "confidence": 0.6,
+            "scenarios": scenarios,
+            "targets": [{"name": "向下目标", "level": 3400}],
+            "supporting_evidence": ["结构偏空", "支撑破位未收复"],
+            "opposing_evidence": ["外盘短线反弹"],
+            "action_maintenance": ["支撑仍未收复"],
+            "action_invalidation": ["收盘重新站上支撑"],
+            "evidence_refs": ["structure_memory", "external_market"],
+            "top_scenario": "downside_continuation",
+            "confidence_margin": 0.10,
+            "low_confidence": False,
+        }
+        pack = {
+            "target_date": "2026-10-23",
+            "llm_judgement": judgement,
+            "structure_memory": {"recent_path_pressure": {"status": "met"}},
+            "external_market": {"SOX": {"pct_chg": -4.3}},
+        }
+        forecast = {
+            "llm_judgement": judgement,
+            "judgement_source": "llm",
+            "structural_bias": "bearish",
+            "window_state": "unresolved",
+            "direction": "bearish",
+            "execution_state": "reduce_only",
+            "action_bias": "reduce_only",
+            "abstain": False,
+            "confidence": 0.6,
+            "scenarios": scenarios,
+            "targets": judgement["targets"],
+        }
+        checks = []
+        direction_gate.check_llm_judgement(
+            "| 权重确信度 | 正常确信 |", pack, forecast, checks
+        )
+        self.assertEqual(checks[-1]["status"], "pass")
+
+        forecast["direction"] = "neutral"
+        checks = []
+        direction_gate.check_llm_judgement(
+            "| 权重确信度 | 正常确信 |", pack, forecast, checks
+        )
+        self.assertEqual(checks[-1]["status"], "fail")
+
+    def test_llm_judgement_validator_builds_forecast(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            scenarios = [
+                {"name": "tail_extreme_down", "direction": "bearish", "weight": 0.10, "lower": 0, "upper": 3400, "close_condition": "收盘低于3400"},
+                {"name": "downside_continuation", "direction": "bearish", "weight": 0.40, "lower": 3400, "upper": 3600, "close_condition": "收盘低于3600"},
+                {"name": "range_oscillation", "direction": "neutral", "weight": 0.30, "lower": 3600, "upper": 3700, "close_condition": "收盘位于区间"},
+                {"name": "upside_breakout", "direction": "bullish", "weight": 0.20, "lower": 3700, "upper": 5000, "close_condition": "收盘高于3700"},
+            ]
+            for row in scenarios:
+                row["path_forecast"] = valid_path_forecast()
+            pack = {
+                "target_date": "2026-10-23",
+                "prediction_type": "prospective",
+                "decision_stage": "premarket",
+                "ruleset_version": common.RULESET_VERSION,
+                "forecast_cutoff": "2026-10-23T09:00:00+08:00",
+                "feature_cutoff": "2026-10-23T09:00:00+08:00",
+                "symbol": "000001.SH",
+                "structure_memory": {"close": 3550},
+                "external_market": {"SOX": {"pct_chg": -4.3}},
+            }
+            judgement = {
+                "source": "llm",
+                "target_date": "2026-10-23",
+                "decision_at": "2026-10-23T08:55:00+08:00",
+                "core_thesis": "支撑失守且外盘确认下行",
+                "structural_bias": "bearish",
+                "window_state": "unresolved",
+                "direction": "bearish",
+                "scenarios": scenarios,
+                "targets": [{"name": "向下目标", "level": 3400}],
+                "execution_state": "reduce_only",
+                "execution_action": "reduce_only",
+                "risk_state": "preemptive_defensive",
+                "confidence": 0.6,
+                "abstain": False,
+                "supporting_evidence": ["支撑破位", "外围风险冲击"],
+                "opposing_evidence": ["短线出现反弹"],
+                "action_maintenance": ["支撑仍未收复"],
+                "action_invalidation": ["收盘重新站上支撑"],
+                "evidence_refs": ["structure_memory.close", "external_market.SOX"],
+                "horizon": "目标交易日",
+                "next_review": "下一交易日收盘",
+            }
+            (root / "pack.json").write_text(json.dumps(pack, ensure_ascii=False), encoding="utf-8")
+            (root / "judgement.json").write_text(json.dumps(judgement, ensure_ascii=False), encoding="utf-8")
+            validated = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "validate_llm_judgement.py"),
+                    "--pack",
+                    str(root / "pack.json"),
+                    "--judgement",
+                    str(root / "judgement.json"),
+                    "--pack-output",
+                    str(root / "pack.final.json"),
+                ],
+                cwd=SCRIPT_DIR,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(validated.returncode, 0, validated.stdout + validated.stderr)
+            built = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_DIR / "build_forecast_from_judgement.py"),
+                    "--pack",
+                    str(root / "pack.final.json"),
+                    "--output",
+                    str(root / "forecast.json"),
+                ],
+                cwd=SCRIPT_DIR,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(built.returncode, 0, built.stdout + built.stderr)
+            forecast = json.loads((root / "forecast.json").read_text(encoding="utf-8"))
+            self.assertEqual(forecast["direction"], "bearish")
+            self.assertEqual(forecast["action_bias"], "reduce_only")
+            self.assertEqual(forecast["judgement_source"], "llm")
 
     def test_action_maintenance_and_release_are_separate(self) -> None:
         pack = premarket_foresight_pack()
@@ -729,12 +1240,12 @@ confidence : 0.5
         self.assertTrue(any("T-1" in error for error in checks[-1]["errors"]))
 
     def test_path_forecast_requires_complete_chain(self) -> None:
-        scenario = {"name": "key_level_test", "path_forecast": valid_path_forecast()}
+        scenario = {"name": "range_oscillation", "path_forecast": valid_path_forecast()}
         self.assertEqual(direction_gate.validate_path_forecasts([scenario]), [])
 
-        missing = {"name": "key_level_test"}
+        missing = {"name": "range_oscillation"}
         self.assertIn(
-            "key_level_test 缺少 path_forecast",
+            "range_oscillation 缺少 path_forecast",
             direction_gate.validate_path_forecasts([missing]),
         )
 
@@ -742,7 +1253,7 @@ confidence : 0.5
         short["steps"] = ["test then rebound"]
         short["targets"] = []
         errors = direction_gate.validate_path_forecasts([
-            {"name": "key_level_test", "path_forecast": short}
+            {"name": "range_oscillation", "path_forecast": short}
         ])
         self.assertTrue(any("steps" in error for error in errors))
         self.assertTrue(any("targets" in error for error in errors))
@@ -751,10 +1262,10 @@ confidence : 0.5
         report = """
 | 情景 | 权重 | 方向 | 收盘区间 | 条件与目标 |
 |---|---:|---|---:|---|
-| 关键位区间测试（基准：低开下探、日内修复） | 40% | 中性 | 3640-3680 | 收盘位于区间，等待确认 |
-| 趋势延续（向下确认） | 30% | 偏空 | 3600-3640 | 收盘跌破防线，目标3584 |
-| 关键位突破/破位（向上确认） | 25% | 偏多 | 3680以上 | 收盘站上防线，目标3700 |
-| 尾部极值（极端下破） | 5% | 偏空 | 3600以下 | 收盘低于尾部阈值 |
+| 区间震荡 | 40% | 震荡 | 3640-3680 | 收盘位于区间，等待确认 |
+| 向下延续 | 30% | 看空 | 3600-3640 | 收盘跌破防线，目标3584 |
+| 向上突破 | 25% | 看多 | 3680以上 | 收盘站上防线，目标3700 |
+| 尾部极值（向下） | 5% | 看空 | 3600以下 | 收盘低于尾部阈值 |
 """
         checks: list[dict] = []
         direction_gate.check_scenarios(report, checks)
@@ -764,36 +1275,48 @@ confidence : 0.5
         self.assertEqual(
             weights,
             {
-                "trend_continuation": 0.30,
-                "key_level_test": 0.40,
-                "breakdown_or_breakout": 0.25,
-                "tail_extreme": 0.05,
+                "downside_continuation": 0.30,
+                "range_oscillation": 0.40,
+                "upside_breakout": 0.25,
+                "tail_extreme_down": 0.05,
             },
         )
-
     def test_chinese_scenario_table_rejects_weight_sum_over_hundred(self) -> None:
         report = """
 | 情景 | 权重 | 方向 | 收盘区间 | 条件与目标 |
 |---|---:|---|---:|---|
-| 关键位区间测试（基准：低开下探、日内修复） | 45% | 中性 | 3640-3680 | 收盘位于区间，等待确认 |
-| 趋势延续（向下确认） | 30% | 偏空 | 3600-3640 | 收盘跌破防线，目标3584 |
-| 关键位突破/破位（向上确认） | 25% | 偏多 | 3680以上 | 收盘站上防线，目标3700 |
-| 尾部极值（极端下破） | 5% | 偏空 | 3600以下 | 收盘低于尾部阈值 |
+| 区间震荡 | 45% | 震荡 | 3640-3680 | 收盘位于区间，等待确认 |
+| 向下延续 | 30% | 看空 | 3600-3640 | 收盘跌破防线，目标3584 |
+| 向上突破 | 25% | 看多 | 3680以上 | 收盘站上防线，目标3700 |
+| 尾部极值（向下） | 5% | 看空 | 3600以下 | 收盘低于尾部阈值 |
 """
         checks: list[dict] = []
         direction_gate.check_scenarios(report, checks)
         self.assertEqual(checks[-1]["status"], "fail")
         self.assertIn("105%", checks[-1]["detail"])
 
+    def test_scenario_table_allows_weight_above_half(self) -> None:
+        report = """
+| 情景 | 权重 | 方向 | 收盘判定 | 完整路径预测 |
+|---|---:|---|---|---|
+| 区间震荡 | 20% | 震荡 | 收盘位于 `[3640, 3680)` | 测试边界后回到区间 |
+| 向下延续 | 55% | 看空 | 收盘位于 `[3600, 3640)` | 反抽失败后跌破支撑 |
+| 向上突破 | 20% | 看多 | 收盘位于 `[3680, 10000]` | 放量接受压力 |
+| 尾部极值（向下） | 5% | 看空 | 收盘位于 `[0, 3600)` | 支撑失守后加速 |
+"""
+        checks: list[dict] = []
+        direction_gate.check_scenarios(report, checks)
+        self.assertEqual(checks[-1]["status"], "pass")
+
     def test_chinese_scenario_headings_are_decidable(self) -> None:
         report = """
-### 关键位区间测试（基准：低开下探、日内修复）（40%）
+### 区间震荡（40%）
 收盘在3640-3680。
-### 趋势延续（向下确认）（30%）
+### 向下延续（30%）
 收盘低于3640，目标3584。
-### 关键位突破/破位（向上确认）（25%）
+### 向上突破（25%）
 收盘高于3680，目标3700。
-### 尾部极值（极端下破）（5%）
+### 尾部极值（向下）（5%）
 收盘低于3600。
 """
         checks: list[dict] = []
@@ -804,10 +1327,10 @@ confidence : 0.5
         report = """
 | 情景 | 权重 | 方向 | 收盘判定 | 完整路径预测 |
 |---|---:|---|---|---|
-| 关键位区间测试 | 40% | 中性 | 收盘位于 `[3640, 3680)` | 低开→测试3640→收回并横盘 |
-| 趋势延续 | 30% | 偏空 | 收盘位于 `[3600, 3640)` | 低开→反抽3640失败→再度下破 |
-| 关键位突破/破位 | 25% | 偏多 | 收盘位于 `[3680, 10000]` | 平开→获得承接→放量突破3680 |
-| 尾部极值 | 5% | 偏空 | 收盘位于 `[0, 3600)` | 显著低开→支撑无承接→流动性冲击 |
+| 区间震荡 | 40% | 震荡 | 收盘位于 `[3640, 3680)` | 低开→测试3640→收回并横盘 |
+| 向下延续 | 30% | 看空 | 收盘位于 `[3600, 3640)` | 低开→反抽3640失败→再度下破 |
+| 向上突破 | 25% | 看多 | 收盘位于 `[3680, 10000]` | 平开→获得承接→放量突破3680 |
+| 尾部极值（向下） | 5% | 看空 | 收盘位于 `[0, 3600)` | 显著低开→支撑无承接→流动性冲击 |
 """
         checks: list[dict] = []
         direction_gate.check_decidable(report, checks)

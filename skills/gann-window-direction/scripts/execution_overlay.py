@@ -132,6 +132,37 @@ def premarket_setup(
             and external_values["NDX"] >= 2.0
         )
     )
+    external_asia = {
+        code: finite_number((pack.get("external_market") or {}).get(code, {}), "pct_chg")
+        for code in ("N225", "KS11", "TWII", "XIN9")
+    }
+    asia_down_count = sum(
+        value is not None and value <= -0.5 for value in external_asia.values()
+    )
+    asia_known_count = sum(value is not None for value in external_asia.values())
+    us_risk_off = bool(
+        (external_values["SOX"] is not None and external_values["SOX"] <= -2.0)
+        or (
+            external_values["IXIC"] is not None
+            and external_values["IXIC"] <= -1.0
+            and external_values["NDX"] is not None
+            and external_values["NDX"] <= -1.0
+        )
+    )
+    external_risk_shock = bool(us_risk_off and asia_down_count >= 2)
+    external_extreme = bool(external_euphoria or external_risk_shock)
+    external_known = any(value is not None for value in external_values.values())
+    external_state = (
+        "risk_on_euphoria"
+        if external_euphoria
+        else "risk_off_shock"
+        if external_risk_shock
+        else "risk_off_unconfirmed"
+        if us_risk_off
+        else "neutral"
+        if external_known
+        else "unknown"
+    )
     volume_content = information.get("volume")
     leadership_state = leadership.get("state")
     if volume_content == "weak" or leadership_state in ("leadership_lagging", "leadership_neutral"):
@@ -153,15 +184,31 @@ def premarket_setup(
     pressure_status = (
         "met" if near_supply else "not_met" if distance_atr is not None else "unknown"
     )
-    external_known = any(value is not None for value in external_values.values())
-    external_status = "met" if external_euphoria else "not_met" if external_known else "unknown"
-    impulse_status = (
+    external_status = (
         "met"
-        if three_day_impulse is not None and three_day_impulse >= 0.015
-        else "not_met"
-        if three_day_impulse is not None
+        if external_extreme
         else "unknown"
+        if external_state in ("risk_off_unconfirmed", "unknown")
+        else "not_met"
     )
+    structure_memory = pack.get("structure_memory") or {}
+    memory_path = structure_memory.get("recent_path_pressure") or {}
+    if three_day_impulse is not None and three_day_impulse >= 0.015:
+        path_status = "met"
+        path_subtype = "fast_impulse"
+        path_detail = f"最近3日涨幅{three_day_impulse:.4%}，达到快速上涨门槛"
+    elif memory_path.get("status") == "met":
+        path_status = "met"
+        path_subtype = str(memory_path.get("subtype") or "structure_pressure")
+        path_detail = str(memory_path.get("detail") or "关键位记忆显示近期路径压力")
+    elif three_day_impulse is not None and memory_path.get("status") in ("met", "not_met"):
+        path_status = "not_met"
+        path_subtype = "none"
+        path_detail = "近期既无快速上涨脉冲，也无破位未收复或支撑附近弱收盘"
+    else:
+        path_status = "unknown"
+        path_subtype = "unknown"
+        path_detail = "近期路径压力状态缺失"
 
     def evidence_row(name: str, status: str, detail: str) -> dict:
         if status not in SETUP_EVIDENCE_STATES:
@@ -198,32 +245,36 @@ def premarket_setup(
             ),
         ),
         evidence_row(
-            "external_euphoria",
+            "external_extreme",
             external_status,
-            "、".join(
-                detail
-                for detail in (
-                    f"费城半导体指数上涨{external_values['SOX']:.2f}%" if external_values["SOX"] is not None else "",
-                    f"纳斯达克综合指数上涨{external_values['IXIC']:.2f}%" if external_values["IXIC"] is not None else "",
-                    f"纳斯达克100指数上涨{external_values['NDX']:.2f}%" if external_values["NDX"] is not None else "",
-                    f"半导体高弹性股票型基金上涨{external_values['SOXL']:.2f}%" if external_values["SOXL"] is not None else "",
-                    f"半导体设计公司股票上涨{external_values['ARM']:.2f}%" if external_values["ARM"] is not None else "",
+            (
+                "、".join(
+                    detail
+                    for detail in (
+                        f"费城半导体指数上涨{external_values['SOX']:.2f}%" if external_values["SOX"] is not None else "",
+                        f"纳斯达克综合指数上涨{external_values['IXIC']:.2f}%" if external_values["IXIC"] is not None else "",
+                        f"纳斯达克100指数上涨{external_values['NDX']:.2f}%" if external_values["NDX"] is not None else "",
+                        f"半导体高弹性股票型基金上涨{external_values['SOXL']:.2f}%" if external_values["SOXL"] is not None else "",
+                        f"半导体设计公司股票上涨{external_values['ARM']:.2f}%" if external_values["ARM"] is not None else "",
+                    )
+                    if detail
                 )
-                if detail
+                if external_state == "risk_on_euphoria"
+                else (
+                    f"美国科技与半导体走弱，亚洲开盘下跌确认{asia_down_count}个市场"
+                    if external_state == "risk_off_shock"
+                    else "美国科技与半导体走弱，但亚洲确认不足"
+                    if external_state == "risk_off_unconfirmed"
+                    else "外部极端状态未成立"
+                )
             )
-            if external_status != "unknown"
+            if external_state != "unknown"
             else "高弹性外围市场锚点缺失",
         ),
         evidence_row(
-            "recent_three_day_impulse",
-            impulse_status,
-            (
-                f"最近3日涨幅{three_day_impulse:.4%}，达到或超过1.5%快速上涨门槛"
-                if impulse_status == "met"
-                else f"最近3日涨幅{three_day_impulse:.4%}，未达到1.5%快速上涨门槛"
-                if three_day_impulse is not None
-                else "近期价格序列不足"
-            ),
+            "recent_path_pressure",
+            path_status,
+            path_detail,
         ),
         evidence_row(
             "confirmation_deficit",
@@ -247,7 +298,11 @@ def premarket_setup(
     elif known_count < 4:
         setup_state = "unknown"
         risk_state = "unknown"
-    elif score >= 4:
+    elif score >= 4 or (
+        structural_status == "met"
+        and external_risk_shock
+        and path_status == "met"
+    ):
         setup_state = "risk_zone_euphoria"
         risk_state = "preemptive_defensive"
     elif score >= 2:
@@ -264,6 +319,11 @@ def premarket_setup(
         "three_day_close_return": None if three_day_impulse is None else round(three_day_impulse, 6),
         "sox_pct_chg": external_values["SOX"],
         "nasdaq_pct_chg": external_values["IXIC"],
+        "external_state": external_state,
+        "asia_down_count": asia_down_count,
+        "asia_known_count": asia_known_count,
+        "external_risk_shock": external_risk_shock,
+        "path_pressure_subtype": path_subtype,
         "setup_score": score,
         "setup_known_checks": known_count,
         "setup_unknown_checks": unknown_count,
@@ -507,7 +567,7 @@ def build_overlay(
         },
         "defensive_trigger": (
             [
-                "premarket_setup 至少满足4项：结构偏空、活跃关键时间、贴近压力带、外盘高弹性利好、近期快速上涨、量能/领涨确认不足",
+                "premarket_setup 至少满足4项：结构偏空、活跃关键时间、贴近压力带、外部极端状态、近期路径压力、量能/领涨确认不足",
                 f"价格在 {pressure_low:.2f}-{pressure_high:.2f} 未获确认前保持 reduce_only；不得因单日高开直接恢复进攻",
             ]
             if states["risk_state"] == "preemptive_defensive"

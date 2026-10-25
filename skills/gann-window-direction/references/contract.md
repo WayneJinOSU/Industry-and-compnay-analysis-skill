@@ -30,6 +30,9 @@ breadth_and_sectors
 leadership
 critical_evidence
 state_inputs
+structure_memory
+scenario_weighting
+llm_judgement
 space_levels
 execution_overlay
 data_gap_register
@@ -69,6 +72,9 @@ The gate requires an explicit timestamp schema for every decision input:
 | `path_memory` | `data_asof` | `available_at`, `source` |
 | `leadership` | `data_asof` | `available_at`, `source` |
 | `state_inputs` | `data_asof` | `available_at`, `source` |
+| `structure_memory` | `data_asof` | `available_at`, `source`, `data_quality` |
+| `scenario_weighting` | `data_asof` | `available_at`, `source`, `data_quality` |
+| `llm_judgement` | `decision_at` | `available_at`, `source`, `data_quality` |
 | `execution_overlay` | `data_asof` | `available_at`, `source`, `data_quality` |
 | external records | `trade_date` | `available_at`, `source`, `data_quality` |
 | gold records | `trade_date` | `available_at`, `source`, `data_quality` |
@@ -174,6 +180,83 @@ austere pass. A missing sample cannot produce `leadership_confirming`.
 }
 ```
 
+## Structure memory and scenario weighting
+
+```json
+{
+  "structure_memory": {
+    "target_date": "YYYY-MM-DD",
+    "data_asof": "YYYY-MM-DD",
+    "available_at": "YYYY-MM-DDTHH:MM:SS+08:00",
+    "source": "...",
+    "data_quality": "complete|partial",
+    "close": 0.0,
+    "nearest_support": {},
+    "nearest_pressure": {},
+    "broken_unreclaimed_count": 0,
+    "reclaimed_count": 0,
+    "recent_path_pressure": {
+      "status": "met|not_met|unknown",
+      "subtype": "break_unreclaimed|weak_close_near_support|none|unknown",
+      "detail": "..."
+    },
+    "pressure_attempt_memory": {
+      "lookback_sessions": 10,
+      "bands": [],
+      "nearest": {}
+    }
+  },
+  "scenario_weighting": {
+    "role": "baseline_reference",
+    "data_asof": "YYYY-MM-DD",
+    "available_at": "YYYY-MM-DDTHH:MM:SS+08:00",
+    "source": "...",
+    "data_quality": "complete|partial",
+    "baseline_weights": {},
+    "adjustments": [],
+    "weights": {},
+    "top_scenario": "...",
+    "second_scenario": "...",
+    "confidence_margin": 0.0,
+    "low_confidence": false
+  },
+  "llm_judgement": {
+    "source": "llm",
+    "target_date": "YYYY-MM-DD",
+    "decision_at": "YYYY-MM-DDTHH:MM:SS+08:00",
+    "structural_bias": "bearish",
+    "window_state": "unresolved",
+    "direction": "bearish",
+    "scenarios": [],
+    "targets": [],
+    "execution_state": "reduce_only",
+    "execution_action": "reduce_only",
+    "risk_state": "preemptive_defensive",
+    "confidence": 0.6,
+    "supporting_evidence": [],
+    "opposing_evidence": [],
+    "action_maintenance": [],
+    "action_invalidation": [],
+    "evidence_refs": [],
+    "horizon": "目标交易日",
+    "next_review": "下一交易日收盘"
+  }
+}
+```
+
+`scenario_weighting` is a code baseline only. The final weights, direction,
+execution state, action and rationale must come from `llm_judgement`; the
+forecast must copy that record and use its four scenarios, weights, targets and
+action. A final `confidence_margin` below 5 percentage points sets
+`low_confidence=true`; prose must not claim a directional edge.
+
+`structure_memory.pressure_attempt_memory` records 10-session pressure tests for
+each registered band: test count, failed close count, accepted close count,
+consecutive failed tests, last test date/status, sessions since last test,
+failed-high descent and test amount ratio. `scenario_weighting` must expose
+`range_width_atr` and `range_width_penalty` whenever the decision interval can
+be calculated.
+
 ## Forecast record
 
 ```json
@@ -196,6 +279,8 @@ austere pass. A missing sample cannot produce `leadership_confirming`.
   "interval_convention": "lower_inclusive_upper_exclusive",
   "scenarios": [],
   "targets": [],
+  "judgement_source": "llm",
+  "llm_judgement": {},
   "execution_overlay": {
     "stage": "premarket",
     "decision_mode": "premarket_setup",
@@ -241,7 +326,7 @@ an explicit direction:
 
 ```json
 {
-  "name": "trend_continuation",
+  "name": "downside_continuation",
   "direction": "bearish",
   "weight": 0.30,
   "lower": 3500.0,
@@ -271,9 +356,12 @@ Rules:
 - the first interval starts at a finite lower bound (normally 0);
 - the final interval includes its upper bound;
 - the highest-weight scenario's direction equals the top-level `direction`;
-- `key_level_test.direction` is `neutral`;
-- `trend_continuation.direction` agrees with weekly regime;
-- `breakdown_or_breakout.direction` is explicit.
+- `downside_continuation.direction` is always `bearish` and represents close below
+  the downside defense;
+- `range_oscillation.direction` is always `neutral`, displayed as `震荡`;
+- `upside_breakout.direction` is always `bullish` and displayed as
+  `向上突破`;
+- `tail_extreme_down.direction` is always `bearish` in the standard lower-tail bin.
 
 ## Report header
 
@@ -283,7 +371,7 @@ The human report presents metadata as a Chinese two-column table:
 | 报告项目 | 内容 |
 |---|---|
 | 预测类型 | 历史回放 |
-| 规则版本 | 2026-10-25.6 |
+| 规则版本 | 2026-10-25.12 |
 | 决策阶段 | 盘前 |
 | 预判截点 | 2026-09-22 09:00:00+08:00 |
 | 特征截点 | 2026-09-22 09:00:00+08:00 |
@@ -299,13 +387,15 @@ it internally. It is not rewritten after freezing.
 ```markdown
 | 决策项目 | 决策内容 |
 |---|---|
-| 结构偏向 | 偏空 |
+| 结构偏向 | 看空 |
 | 窗口状态 | 未决 |
-| 事件日方向 | 中性 |
+| 事件日方向 | 震荡 |
 | 执行状态 | 只减不加 |
 | 操作偏向 | 只减不加 |
 | 是否弃权 | 否 |
 | 置信度 | 0.55 |
+| 权重领先幅度 | 8.0个百分点 |
+| 权重确信度 | 正常确信 |
 | 决策区间 | 3958.03-3992.55 |
 | 失效条件 | 收盘接受3992.55上方或跌破3916.49 |
 | 下一确认 | 向下3916.49；向上3992.55 |
@@ -336,9 +426,12 @@ Keep it to five sections:
 
 1. Header and one decision card.
 2. Core trading judgment: one conclusion, at least two decision-relevant
-   supporting observations and the strongest opposing evidence.
+   supporting observations and the strongest opposing evidence. State that the
+   final comprehensive judgement is the validated LLM decision, while code
+   supplies data, baseline weights and risk constraints.
 3. Decision evidence: one compact table for external mapping, path, breadth,
-   funding and leadership; state important gaps and unmatched base rates here.
+   funding, leadership, broken-level memory and low-confidence weighting; state
+   important gaps and unmatched base rates here.
 4. Critical levels and one four-scenario table. Show only levels used by a
    trigger, target or invalidation. Every row contains the complete ordered
    path forecast, targets and invalidation, separate from the pure close rule.
@@ -354,8 +447,8 @@ level rationale in later sections. Do not put completed wave ledgers, the full
 level ladder, raw leadership fields or review attribution in the brief.
 
 For Chinese user-facing reports, use the standard scenario labels in
-[report-language-zh.md](report-language-zh.md): `趋势延续`,
-`关键位区间测试`, `关键位突破/破位`, `尾部极值`. Keep canonical English ids in
+[report-language-zh.md](report-language-zh.md): `向下延续`, `区间震荡`,
+`向上突破`, `尾部极值（向下）`. Keep canonical English ids in
 `forecast_record.json` and other machine-readable artifacts. Report headers,
 decision cards and execution-overlay tables must use the Chinese field/value
 display contract; raw machine enum blocks are not permitted as the primary
@@ -454,5 +547,5 @@ reward earlier defense without measuring its opportunity cost.
 
 ## Ruleset
 
-The current schema/rule version is `2026-10-25.6`. All scripts read the version
+The current schema/rule version is `2026-10-25.12`. All scripts read the version
 from `scripts/common.py`; reports and packs must match it.

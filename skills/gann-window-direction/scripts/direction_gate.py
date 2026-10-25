@@ -29,7 +29,6 @@ from pathlib import Path
 from common import (
     INFO_VALUES,
     LAYERS,
-    MAX_SCENARIO_WEIGHT,
     REPORT_FIELD_LABELS_ZH,
     RULESET_VERSION,
     SCENARIO_REPORT_LABELS,
@@ -57,7 +56,6 @@ ATTRIBUTION_LABELS_ZH = {
     "weighting": ("权重分配", "权重"),
     "rule_gap": ("规则缺口",),
 }
-WEIGHT_CAP = MAX_SCENARIO_WEIGHT
 STRUCTURAL_VALUES = ("bullish", "bearish", "neutral")
 WINDOW_VALUES = (
     "unresolved",
@@ -103,6 +101,9 @@ PACK_REQUIRED = (
     "data_gap_register",
     "critical_evidence",
     "state_inputs",
+    "structure_memory",
+    "scenario_weighting",
+    "llm_judgement",
     "leadership",
     "space_levels",
     "execution_overlay",
@@ -148,7 +149,7 @@ CHINESE_QUANTITY_PATTERNS = (
         rf"[{CHINESE_NUMBER_CHARS}]{{1,3}}日"
     ),
     re.compile(
-        rf"(?<![第下同统唯])[{CHINESE_NUMBER_CHARS}]+"
+        rf"(?<![第下同统唯前当])[{CHINESE_NUMBER_CHARS}]+"
         r"(?:个完整交易日|个交易日|交易日|周|日|倍|亿元|万元|点|次|只|根|家|项|档|时)"
     ),
     re.compile(rf"第[{CHINESE_NUMBER_CHARS}]+版"),
@@ -192,6 +193,18 @@ OBSERVATION_NODE_SCHEMAS = {
     },
     "state_inputs": {
         "date_fields": ("data_asof", "asof"),
+        "required": ("available_at", "source", "data_quality"),
+    },
+    "structure_memory": {
+        "date_fields": ("data_asof",),
+        "required": ("available_at", "source", "data_quality"),
+    },
+    "scenario_weighting": {
+        "date_fields": ("data_asof",),
+        "required": ("available_at", "source", "data_quality"),
+    },
+    "llm_judgement": {
+        "date_fields": ("decision_at",),
         "required": ("available_at", "source", "data_quality"),
     },
     "execution_overlay": {
@@ -297,6 +310,18 @@ def check_report_header(report: str, pack: dict | None, checks: list) -> None:
         if mismatches:
             add(checks, "report_header_and_decision_card", "fail", "报告头与输入包元数据不一致", mismatches=mismatches)
             return
+    missing_weight_display = [
+        label for label in ("权重领先幅度", "权重确信度") if label not in report
+    ]
+    if missing_weight_display:
+        add(
+            checks,
+            "report_header_and_decision_card",
+            "fail",
+            "决策卡缺少动态权重置信显示",
+            missing_labels=missing_weight_display,
+        )
+        return
     add(checks, "report_header_and_decision_card", "pass", "报告头、决策卡和枚举值齐备")
 
 
@@ -380,7 +405,268 @@ def check_pack_contract(report: str, pack: dict | None, checks: list) -> None:
     if not isinstance(pack.get("source_used"), dict) or not pack["source_used"]:
         add(checks, "input_pack_contract", "fail", "source_used 必须给出字段级实际来源")
         return
+    memory = pack.get("structure_memory")
+    memory_required = (
+        "target_date",
+        "data_asof",
+        "available_at",
+        "source",
+        "data_quality",
+        "close",
+        "recent_path_pressure",
+        "pressure_attempt_memory",
+    )
+    memory_missing = [
+        field for field in memory_required if not isinstance(memory, dict) or field not in memory
+    ]
+    if memory_missing:
+        add(
+            checks,
+            "input_pack_contract",
+            "fail",
+            "structure_memory 字段不完整",
+            missing_fields=memory_missing,
+        )
+        return
+    path_state = (memory.get("recent_path_pressure") or {}).get("status")
+    if path_state not in ("met", "not_met", "unknown"):
+        add(
+            checks,
+            "input_pack_contract",
+            "fail",
+            "structure_memory.recent_path_pressure.status 非法",
+            actual=path_state,
+        )
+        return
+    pressure_memory = memory.get("pressure_attempt_memory")
+    if not isinstance(pressure_memory, dict) or not isinstance(
+        pressure_memory.get("bands"), list
+    ):
+        add(
+            checks,
+            "input_pack_contract",
+            "fail",
+            "structure_memory.pressure_attempt_memory 必须包含压力尝试序列",
+        )
+        return
+    invalid_attempts = [
+        row
+        for row in pressure_memory.get("bands", [])
+        if not isinstance(row, dict)
+        or not {
+            "band_id",
+            "anchor_level",
+            "defense_level",
+            "test_count",
+            "failed_close_count",
+            "accepted_close_count",
+            "consecutive_failed_tests",
+            "status",
+        }.issubset(row)
+    ]
+    if invalid_attempts:
+        add(
+            checks,
+            "input_pack_contract",
+            "fail",
+            "pressure_attempt_memory 条目字段不完整",
+            invalid_attempts=invalid_attempts[:5],
+        )
+        return
+    try:
+        if parse_date(memory["data_asof"]) >= parse_date(pack["target_date"]):
+            add(
+                checks,
+                "input_pack_contract",
+                "fail",
+                "structure_memory 必须严格早于目标日期",
+                data_asof=memory["data_asof"],
+            )
+            return
+    except (KeyError, TypeError, ValueError):
+        add(checks, "input_pack_contract", "fail", "structure_memory 时点无法解析")
+        return
     add(checks, "input_pack_contract", "pass", f"{len(PACK_REQUIRED)} 个核心输入包字段齐备")
+
+
+def check_scenario_weighting(pack: dict | None, checks: list) -> None:
+    weighting = (pack or {}).get("scenario_weighting")
+    if not isinstance(weighting, dict):
+        add(checks, "scenario_weighting", "fail", "输入包缺少基线方案权重")
+        return
+    if weighting.get("role") != "baseline_reference":
+        add(
+            checks,
+            "scenario_weighting",
+            "fail",
+            "代码权重必须明确标记为基线参考，不能冒充最终研判",
+        )
+        return
+    weights = weighting.get("weights")
+    if not isinstance(weights, dict):
+        add(checks, "scenario_weighting", "fail", "方案权重推导结果缺少 weights")
+        return
+    missing = [name for name in SHAPES if name not in weights]
+    invalid = [
+        name
+        for name, value in weights.items()
+        if name not in SHAPES or not isinstance(value, (int, float)) or float(value) < 0
+    ]
+    if missing or invalid:
+        add(
+            checks,
+            "scenario_weighting",
+            "fail",
+            "方案权重键或数值非法",
+            missing=missing,
+            invalid=invalid,
+        )
+        return
+    total = sum(float(value) for value in weights.values())
+    if abs(total - 1.0) > 1e-6:
+        add(
+            checks,
+            "scenario_weighting",
+            "fail",
+            "方案权重未归一化",
+            total=round(total, 6),
+        )
+        return
+    add(
+        checks,
+        "scenario_weighting",
+        "pass",
+        "代码基线权重合法，最终研判由大模型结构化判断覆盖",
+        confidence_margin=weighting.get("confidence_margin"),
+    )
+
+
+def check_llm_judgement(
+    report: str,
+    pack: dict | None,
+    forecast: dict | None,
+    checks: list,
+) -> None:
+    judgement = (pack or {}).get("llm_judgement")
+    if not isinstance(judgement, dict):
+        add(checks, "llm_judgement", "fail", "输入包缺少大模型最终结构化研判")
+        return
+    errors: list[str] = []
+    if judgement.get("source") != "llm":
+        errors.append("最终研判来源必须明确为大模型")
+    if str(judgement.get("target_date")) != str((pack or {}).get("target_date")):
+        errors.append("大模型研判目标日与输入包不一致")
+    if judgement.get("structural_bias") not in STRUCTURAL_VALUES:
+        errors.append("大模型研判的结构偏向非法")
+    if judgement.get("window_state") not in WINDOW_VALUES:
+        errors.append("大模型研判的窗口状态非法")
+    if judgement.get("direction") not in ("bullish", "bearish", "neutral"):
+        errors.append("大模型研判的事件日方向非法")
+    if judgement.get("execution_state") not in EXECUTION_VALUES:
+        errors.append("大模型研判的执行状态非法")
+    if judgement.get("execution_action") not in ACTION_VALUES:
+        errors.append("大模型研判的执行动作非法")
+    if judgement.get("risk_state") not in RISK_STATES:
+        errors.append("大模型研判的风险状态非法")
+    if not isinstance(judgement.get("abstain"), bool):
+        errors.append("大模型研判的 abstain 必须为布尔值")
+    scenarios = judgement.get("scenarios")
+    if not isinstance(scenarios, list):
+        errors.append("大模型研判缺少四情景")
+        scenarios = []
+    errors.extend(validate_scenarios(scenarios))
+    for field, minimum in (
+        ("supporting_evidence", 2),
+        ("opposing_evidence", 1),
+        ("action_maintenance", 1),
+        ("action_invalidation", 1),
+        ("evidence_refs", 1),
+    ):
+        value = judgement.get(field)
+        if not isinstance(value, list) or len(
+            [item for item in value if str(item).strip()]
+        ) < minimum:
+            errors.append(f"{field} 至少需要 {minimum} 条")
+    refs = judgement.get("evidence_refs")
+    if isinstance(refs, list):
+        missing_refs = []
+        for reference in refs:
+            text = str(reference or "").strip()
+            path = text[2:] if text.startswith("$.") else text
+            current: object = pack
+            for part in path.split(".") if path else []:
+                if not isinstance(current, dict) or part not in current:
+                    current = None
+                    break
+                current = current[part]
+            if current in (None, "", [], {}):
+                missing_refs.append(text)
+        if missing_refs:
+            errors.append(f"evidence_refs 包含不存在或为空的证据：{missing_refs}")
+    if not isinstance(judgement.get("targets"), list) or not judgement.get("targets"):
+        errors.append("大模型研判缺少目标列表")
+
+    top_scenario = None
+    margin = None
+    if scenarios and not validate_scenarios(scenarios):
+        ordered = sorted(scenarios, key=lambda row: float(row["weight"]), reverse=True)
+        top_scenario = ordered[0]["name"]
+        margin = round(float(ordered[0]["weight"]) - float(ordered[1]["weight"]), 4)
+        expected_direction = ordered[0].get("direction")
+        if judgement.get("direction") != expected_direction:
+            errors.append("事件日方向必须等于最高权重情景方向")
+        if judgement.get("top_scenario") != top_scenario:
+            errors.append("top_scenario 与最高权重情景不一致")
+        if judgement.get("confidence_margin") != margin:
+            errors.append("confidence_margin 与四情景权重不一致")
+        expected_low = margin < 0.05
+        if judgement.get("low_confidence") != expected_low:
+            errors.append("low_confidence 与权重领先幅度不一致")
+        expected_confidence_text = "低确信" if expected_low else "正常确信"
+        if expected_confidence_text not in report:
+            errors.append(f"报告权重确信度必须为“{expected_confidence_text}”")
+
+    if forecast is None:
+        errors.append("缺少 forecast，无法核对大模型研判")
+    else:
+        if forecast.get("llm_judgement") != judgement:
+            errors.append("forecast 未原样冻结大模型研判")
+        if forecast.get("judgement_source") != "llm":
+            errors.append("forecast.judgement_source 必须为 llm")
+        for judgement_field, forecast_field in (
+            ("structural_bias", "structural_bias"),
+            ("window_state", "window_state"),
+            ("direction", "direction"),
+            ("execution_state", "execution_state"),
+            ("execution_action", "action_bias"),
+            ("abstain", "abstain"),
+            ("confidence", "confidence"),
+            ("scenarios", "scenarios"),
+            ("targets", "targets"),
+        ):
+            if judgement.get(judgement_field) != forecast.get(forecast_field):
+                errors.append(f"{forecast_field} 与大模型研判不一致")
+    if errors:
+        add(checks, "llm_judgement", "fail", "大模型最终研判不完整或与 forecast 不一致", errors=errors)
+        return
+    if judgement.get("low_confidence") and float(judgement.get("confidence", 1)) > 0.65:
+        add(
+            checks,
+            "llm_judgement",
+            "warning",
+            "低确信研判仍给出过高置信度",
+            confidence_margin=margin,
+            confidence=judgement.get("confidence"),
+        )
+        return
+    add(
+        checks,
+        "llm_judgement",
+        "pass",
+        "大模型综合研判已覆盖代码基线，并满足方向、权重、时点与理由契约",
+        top_scenario=top_scenario,
+        confidence_margin=margin,
+    )
 
 
 def check_critical_evidence(
@@ -799,6 +1085,8 @@ def check_forecast_contract(report: str, pack: dict | None, forecast: dict | Non
         "scenarios",
         "targets",
         "execution_overlay",
+        "llm_judgement",
+        "judgement_source",
     )
     if forecast is None:
         add(checks, "forecast_contract", "fail", "缺少 forecast record")
@@ -861,18 +1149,6 @@ def check_forecast_contract(report: str, pack: dict | None, forecast: dict | Non
             errors.append(
                 f"事件日 direction 必须等于最高权重情景的显式 direction："
                 f"{forecast.get('direction')!r} != {modal.get('direction')!r}"
-            )
-        weekly = str(
-            ((pack or {}).get("state_inputs") or {}).get("weekly_regime")
-            or ((pack or {}).get("wave_result") or {}).get("weekly_regime")
-            or ""
-        ).lower()
-        trend = next((row for row in scenarios if row.get("name") == "trend_continuation"), None)
-        expected_trend = {"down": "bearish", "up": "bullish"}.get(weekly)
-        if trend and expected_trend and trend.get("direction") != expected_trend:
-            errors.append(
-                f"trend_continuation.direction={trend.get('direction')!r} "
-                f"does not match weekly_regime={weekly!r}"
             )
     report_weights, report_total = parse_weights(report)
     forecast_weights = {
@@ -1474,9 +1750,6 @@ def check_scenarios(report: str, checks: list) -> None:
     problems = []
     if not 0.97 <= total <= 1.03:
         problems.append(f"权重合计 {total:.0%} 未落在 100%±3%")
-    over = {k: round(v, 2) for k, v in weights.items() if v > WEIGHT_CAP}
-    if over:
-        problems.append(f"单一情景权重超过上限 {WEIGHT_CAP:.0%}：{over}")
     if problems:
         add(checks, "scenario_weights", "fail", "；".join(problems), weights={k: round(v, 3) for k, v in weights.items()})
         return
@@ -1484,7 +1757,7 @@ def check_scenarios(report: str, checks: list) -> None:
         checks,
         "scenario_weights",
         "pass",
-        f"四形态齐备、权重合计 {total:.0%}、无单一情景超过 {WEIGHT_CAP:.0%}",
+        f"四形态齐备、权重合计 {total:.0%}",
         weights={k: round(v, 3) for k, v in weights.items()},
     )
 
@@ -1600,9 +1873,6 @@ def check_forecast_partition(forecast: dict | None, checks: list) -> None:
     problems: list[str] = []
     if not 0.97 <= total <= 1.03:
         problems.append(f"权重合计 {total:.0%} 未落在 100%±3%")
-    over = {s["name"]: s["weight"] for s in scenarios if float(s.get("weight", 0)) > WEIGHT_CAP}
-    if over:
-        problems.append(f"单一情景权重超过 {WEIGHT_CAP:.0%}：{over}")
 
     try:
         bounded = [
@@ -1818,6 +2088,8 @@ def main() -> int:
     check_numeric_display(review_text, checks)
     check_language_display(review_text, checks)
     check_pack_contract(report, pack, checks)
+    check_scenario_weighting(pack, checks)
+    check_llm_judgement(report, pack, forecast, checks)
     check_critical_evidence(report, pack, forecast, checks)
     check_future_function(report, pack, checks)
     check_external_integrity(report, pack, checks)

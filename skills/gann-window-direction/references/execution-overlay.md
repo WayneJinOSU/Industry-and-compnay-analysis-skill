@@ -63,6 +63,14 @@ In `decision_mode=premarket_setup`, `pressure_state=untested` means the target
 day has not begun; it does not make the premarket risk prior neutral. The
 premarket setup state and evidence are reported separately.
 
+The six setup checks use `external_extreme` instead of a one-sided positive
+catalyst. A downside shock is confirmed only when US semiconductor/Nasdaq
+weakness is paired with at least two of Japan, Korea, Taiwan and the China proxy
+falling at the cutoff. US weakness with insufficient Asia confirmation remains
+`unknown`. `recent_path_pressure` combines a fast three-day rebound with
+break-and-reclaim memory, so an unreclaimed support break can contribute to the
+premarket prior without fake-confirming a target-day close.
+
 ## Risk derivation
 
 - `preemptive_defensive`: a premarket or combined setup identifies a mature
@@ -84,6 +92,11 @@ The execution bias is `reduce_only` for confirmed or preemptive defense,
 `add_only_after_confirmation` for offense, `wait_for_confirmation` for
 watch/unknown and `observe` for normal. This is a research risk overlay, not a
 personalized portfolio instruction.
+
+This mapping is a code reference. The final execution state and action belong to
+the validated LLM judgement. A deviation must state which point-in-time evidence
+overrode the reference and must still include maintenance, invalidation, horizon
+and review conditions.
 
 ## Required output
 

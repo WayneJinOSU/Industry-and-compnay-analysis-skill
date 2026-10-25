@@ -310,17 +310,17 @@ def main() -> int:
     informative_layers = [k for k, v in information_content.items() if v == "informative"]
 
     if regime == "down" and funding == "deleveraging" and breadth == "deteriorating":
-        prior = {"trend_continuation": "35-50%", "key_level_test": "20-35%", "breakdown_or_breakout": "15-30%", "tail_extreme": "<=10%"}
+        prior = {"downside_continuation": ">=35%", "range_oscillation": "20-35%", "upside_breakout": "15-30%", "tail_extreme_down": "<=10%"}
         cap_note = "weekly=down 且 funding=deleveraging 且 breadth=deteriorating：不得把回到中枢作为基准"
     elif regime == "down":
-        prior = {"trend_continuation": "30-45%", "key_level_test": ">=30%", "breakdown_or_breakout": "15-25%", "tail_extreme": "<=10%"}
-        cap_note = "weekly=down 且资金/宽度不同向：趋势延续30-45%，关键位测试至少30%"
+        prior = {"downside_continuation": "30-45%", "range_oscillation": ">=30%", "upside_breakout": "15-25%", "tail_extreme_down": "<=10%"}
+        cap_note = "weekly=down 且资金/宽度不同向：downside_continuation 30-45%，range_oscillation 至少30%"
     elif regime == "up" and funding == "accumulating" and breadth == "improving":
-        prior = {"trend_continuation": "35-50%（向上）", "key_level_test": "20-35%", "breakdown_or_breakout": "15-30%", "tail_extreme": "<=10%"}
+        prior = {"downside_continuation": ">=35%（向上）", "range_oscillation": "20-35%", "upside_breakout": "15-30%", "tail_extreme_down": "<=10%"}
         cap_note = "镜像处理，突破方向优先"
     else:
-        prior = {"trend_continuation": "<=40%", "key_level_test": "<=40%", "breakdown_or_breakout": "—", "tail_extreme": "<=10%"}
-        cap_note = "range 或跨层 mixed：任何单一情景不超过 50%"
+        prior = {"downside_continuation": "<=40%", "range_oscillation": "<=40%", "upside_breakout": "—", "tail_extreme_down": "<=10%"}
+        cap_note = "range 或跨层 mixed：权重由后续综合研判确定，只要求合计归一化"
 
     extreme_flags = {
         "breadth_extreme_low": extreme_low,
@@ -332,11 +332,11 @@ def main() -> int:
         cap_note += "；存在极值状态时，按当前匹配状态的同口径条件分布确定反向分支下限"
     if volume_compression:
         cap_note += (
-            "；量能压缩成立：breakdown_or_breakout 下限 25%，"
+            "；量能压缩成立：upside_breakout 下限 25%，"
             "无宽度/等权修复确认时不得把“回到中枢”作为基准"
         )
-        if prior.get("breakdown_or_breakout", "").startswith(("15-25", "15-30")):
-            prior["breakdown_or_breakout"] = "25-30%"
+        if prior.get("upside_breakout", "").startswith(("15-25", "15-30")):
+            prior["upside_breakout"] = "25-30%"
 
     floors_by_state = {}
     reversal_floor = 0.25

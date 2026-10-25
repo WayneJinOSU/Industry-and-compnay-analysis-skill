@@ -57,6 +57,26 @@ decision. Separate structural bias, event-day direction and execution state.
     established qualitative labels such as `第四浪`; navigation and grammar
     phrases such as `下一交易日` are not quantities and must not be rewritten
     as `下1交易日`.
+15. Keep a point-in-time break-and-reclaim memory from the previous report's
+    support and pressure defenses. A newly generated defense band must not erase
+    an older broken support until a close reclaims it. Also record pressure
+    tests, failed closes, consecutive failures, last test time and test volume
+    from completed daily bars. A wide decision band may not receive an inflated
+    range weight merely because it is wide. Code may derive a baseline weight
+    reference, but the final four-scenario weights, direction, execution action
+    and operation advice belong to the LLM judgement. Code validates the
+    arithmetic, timestamps, allowed states, fixed scenario directions and
+    evidence/rationale completeness. When the final top two weights differ by
+    less than 5 percentage points, the result must be marked low-confidence.
+16. External catalysts are symmetric. Positive high-beta acceleration near
+    supply and confirmed negative US-semiconductor/Nasdaq shocks near weak
+    support both raise execution risk. A negative external shock requires Asia
+    confirmation and cannot by itself set the event-day close direction.
+17. The comprehensive judgement must be submitted by the LLM as a structured
+    record before prose writing. It owns final scenario weights, direction,
+    execution state, action and rationale. The forecast must be generated from
+    that record; the code baseline, risk overlay and gate are references and
+    constraints, not hidden substitutes for the LLM decision.
 
 ## Upstream inputs
 
@@ -131,6 +151,20 @@ python3 scripts/state_inputs.py \
   [--leaders <csv>] [--leadership-json <json>] [--extreme-stats <json>] \
   --pack-output <pack.enriched.json> --output <state_dir>
 
+python3 scripts/structure_memory.py \
+  --index-daily <csv> --previous-levels <previous_levels.csv> \
+  --target-date <target_date> --asof <feature_date> \
+  --available-at "<available_at>" \
+  --pack <pack.enriched.json> --pack-output <pack.with_structure.json> \
+  --output <structure_memory.json>
+
+python3 scripts/scenario_weights.py \
+  --pack <pack.with_structure.json> \
+  --pack-output <pack.with_weights.json> \
+  --output <scenario_weights.json>
+
+# `scenario_weights.json` is a baseline reference. It is not the final decision.
+
 # 4. Run conditional base rates when the prior session is a crash, low close
 #    or volume outlier.
 python3 scripts/conditional_base_rates.py \
@@ -150,7 +184,7 @@ python3 scripts/build_level_registry.py \
   --require-handoff --symbol <index> --output <levels_dir>
 
 python3 scripts/attach_levels.py \
-  --pack <pack.enriched.json> \
+  --pack <pack.with_weights.json> \
   --levels <levels_dir>/level_registry.csv \
   --output <pack.final.json>
 
@@ -162,11 +196,23 @@ python3 scripts/execution_overlay.py \
   --pressure-low <level> --pressure-high <level> --support <level> \
   --pack-output <pack.with_overlay.json> --output <execution_overlay.json>
 
-# 7. Write a concise report.md plus a complete audit.md, the enriched input pack
-#    and forecast_record.json. Copy the identical execution_overlay object into
-#    the forecast. Schemas are defined in references/contract.md.
+# 7. The LLM reads the complete point-in-time pack, baseline weights and execution
+#    reference, then writes llm_judgement.json with final weights, direction,
+#    execution action and rationale. Validate and attach it before building the
+#    forecast.
+python3 scripts/validate_llm_judgement.py \
+  --pack <pack.with_overlay.json> \
+  --judgement <llm_judgement.json> \
+  --pack-output <pack.final.json>
 
-# 8. Preflight, write the declared status, freeze once, then verify externally.
+python3 scripts/build_forecast_from_judgement.py \
+  --pack <pack.final.json> --output <forecast_record.json>
+
+# 8. Write a concise report.md plus a complete audit.md. Copy the identical
+#    execution_overlay object into the forecast. Schemas are defined in
+#    references/contract.md.
+
+# 9. Preflight, write the declared status, freeze once, then verify externally.
 python3 scripts/direction_gate.py \
   --report <stage>/report.md --audit <stage>/audit.md \
   --pack <stage>/direction_input_pack.json \
@@ -187,7 +233,7 @@ python3 scripts/direction_gate.py \
   --manifest <stage>/snapshot_manifest.json \
   --output <stage>/gate
 
-# 9. Score separately; never feed target-day results back into the report.
+# 10. Score separately; never feed target-day results back into the report.
 python3 scripts/scorecard.py \
   --log <forecasts.jsonl> --index-daily <history_with_target.csv> \
   [--append <forecast_record.json>] --output <score_dir>
@@ -208,15 +254,15 @@ Use four close bins:
 
 | Canonical id | Chinese report label | Required meaning |
 |---|---|---|
-| `trend_continuation` | 趋势延续 | Close continues the active weekly/structural trend |
-| `key_level_test` | 关键位区间测试 | Close remains inside the active support-pressure decision band |
-| `breakdown_or_breakout` | 关键位突破/破位 | Close accepts a boundary; `direction` states which side |
-| `tail_extreme` | 尾部极值 | Close is beyond a predeclared abnormal threshold |
+| `downside_continuation` | 向下延续 | Close remains below the downside defense |
+| `range_oscillation` | 区间震荡 | Close remains inside the active support-pressure decision band |
+| `upside_breakout` | 向上突破 | Close accepts the upside pressure defense |
+| `tail_extreme_down` | 尾部极值（向下） | Close is beyond the predeclared abnormal lower threshold |
 
 The Chinese labels are part of the report contract, not replacements for the
-canonical ids. A report may write “趋势延续（向下确认）”, “关键位区间测试
-（基准：低开下探、日内修复）” or “关键位突破/破位（向上确认）”; the text before
-the parenthesis must remain one of the standard Chinese labels above.
+canonical ids. Reports use `向下延续`, `区间震荡`, `向上突破` and
+`尾部极值（向下）`. The first must be bearish, the second range, the third
+bullish and the fourth bearish.
 
 Rules:
 
@@ -225,13 +271,15 @@ Rules:
   condition and a complete `path_forecast`: opening assumption, at least two
   ordered path steps, confirmation, targets and invalidation. The close condition
   remains a pure close rule; the path describes how that close may be reached.
-- `key_level_test.direction` is `neutral`.
-- `trend_continuation.direction` agrees with `weekly_regime`: down→bearish,
-  up→bullish. Weekly range requires an explicit branch thesis.
-- `breakdown_or_breakout.direction` is never inferred from its name.
+- `downside_continuation.direction` is always `bearish` and displayed as `看空`.
+- `range_oscillation.direction` is always `neutral` and displayed as `震荡`.
+- `upside_breakout.direction` is always `bullish` and displayed as `看多`.
+- `tail_extreme_down.direction` is always `bearish` in the standard lower-tail bin.
+- Top-level `direction` therefore behaves as three visible states only:
+  `看多`, `看空`, `震荡`. Machine `neutral` is kept only for compatibility and
+  must be displayed as `震荡`.
 - Weight is an internal ranking score, not a probability. Do not call it a
   calibrated probability and do not compute Brier scores from it.
-- No single close bin may exceed 50%.
 - `event_direction` is copied from the highest-weight bin's explicit direction.
 
 Before writing prose, populate `critical_evidence`:
@@ -281,6 +329,7 @@ Hard failures:
 - target-day close or full-session data in a premarket pack;
 - inconsistent report/pack/forecast states;
 - invalid or overlapping close bins;
+- missing or future-dated break/reclaim memory or scenario weighting;
 - missing level-registry gate or undisclosed orphan levels;
 - manifest hash mismatch;
 - rule/schema version mismatch;
@@ -334,3 +383,5 @@ Historical replay always goes under `backfill/`. Never overwrite a frozen stage.
   mapping, levels, leadership, volume, state and scoring rules.
 - [references/rule-ledger.md](references/rule-ledger.md): historical rule
   changes and replay evidence.
+- [references/llm-judgement.md](references/llm-judgement.md): final LLM
+  judgement schema, evidence references and code-validation boundary.

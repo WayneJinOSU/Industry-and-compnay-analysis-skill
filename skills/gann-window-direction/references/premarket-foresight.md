@@ -26,11 +26,13 @@ Evaluate six causal checks:
 2. `active_key_window`: target date lies in a confirmed Gann time window.
 3. `pressure_proximity`: prior close is within about 0.75 ATR below the first
    pressure anchor, or already inside the pressure band.
-4. `external_euphoria`: a high-beta external chain accelerates sharply, such as
-   SOX or a combination of Nasdaq/Nasdaq-100. This is a gap/crowding catalyst,
-   not a direct bullish A-share direction signal.
-5. `recent_three_day_impulse`: the prior three sessions already produced a fast
-   rebound, making the move vulnerable at supply.
+4. `external_extreme`: either a high-beta external chain accelerates sharply, or
+   US semiconductors/Nasdaq fall sharply and at least two of Japan, Korea,
+   Taiwan and the China proxy confirm downside at the cutoff. This is an
+   execution-risk catalyst, not a direct event-day close direction signal.
+5. `recent_path_pressure`: either the prior three sessions produced a fast
+   rebound, or break/reclaim memory shows an unreclaimed support break or a weak
+   close near support.
 6. `confirmation_deficit`: volume and/or time-appropriate leadership are not
    informative or not confirming.
 
@@ -38,6 +40,10 @@ Report each check with one of three states: `met`, `not_met` or `unknown`.
 Missing inputs remain `unknown`, lower confidence and never count toward the
 setup score. At least four of the six checks must be known before classifying
 the setup; otherwise `setup_state=unknown`.
+
+For `external_extreme`, an unconfirmed US downside shock with fewer than two
+Asia confirmations is `unknown`, not `not_met`. Missing Asia data must never be
+silently interpreted as neutral.
 
 ## State derivation
 
@@ -56,6 +62,15 @@ score 0-1   -> setup_state=normal
             -> risk_state=normal
             -> execution_bias=observe
 ```
+
+A confirmed downside combination also triggers `risk_zone_euphoria` with a score
+of 3 when all three are true: bearish structure, confirmed external risk shock,
+and recent path pressure from break/reclaim memory. These are separate risk
+dimensions, so this combination does not require an unrelated fourth check.
+
+These mappings are the code risk reference. The LLM's validated final judgement
+selects the actual execution action and must explain any deviation from the
+reference using point-in-time evidence.
 
 `preemptive_defensive` means: do not add and reduce existing tactical exposure
 until acceptance is demonstrated. It does not claim that support has already

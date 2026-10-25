@@ -12,7 +12,9 @@ execution_state: observe | wait_for_confirmation | confirmed | reduce_only | abs
 ```
 
 `direction` is a separate event-level output. It is the modal close-bin
-direction. It is not copied from `structural_bias`.
+direction. It is not copied from `structural_bias`. Machine `neutral` means the
+visible direction `震荡`; the report must never display `中性` as a fourth
+direction.
 
 ## Information content
 
@@ -101,6 +103,34 @@ Rules:
 - An isolated recent price-structure level must be disclosed by exact price.
 - A gap in the volume profile is separate from a price gap and must be reported
   as a no-cost-support zone.
+
+### Break and reclaim memory
+
+Generate `structure_memory` from the previous report's support/pressure levels
+before loading target-day data. A support break remains active until a later
+close reclaims that exact level. A new support band cannot erase the old break.
+
+Required states:
+
+```text
+support: not_broken | broken_unreclaimed | reclaimed
+pressure: accepted | rejected_or_below
+recent_path_pressure: met | not_met | unknown
+```
+
+`recent_path_pressure=met` includes either an unreclaimed support break or a
+weak close near support. This is evidence for execution risk and a bounded
+scenario-weight adjustment, not a standalone short signal.
+
+Also keep `pressure_attempt_memory` for each pressure band. A completed daily bar
+tests the band when its high reaches the pressure anchor. The test is a failed
+breakout when the close remains below the pressure defense, and an accepted
+breakout only when the close reaches the defense. Record the 10-session test
+count, failed and accepted close counts, consecutive failed tests, last test
+date and status, sessions since the last test, whether failed highs are
+descending, and test amount relative to the 10-day baseline. A wide range
+decision band receives a bounded range-weight penalty; width alone cannot count
+as evidence of a stable range.
 
 ## Volume and margin
 
@@ -192,6 +222,15 @@ another state or into a general “market bottom” rule.
 All four bins are close-price bins for settlement. They are not the same as the
 full intraday path.
 
+The report labels encode direction unambiguously:
+
+```text
+向下延续 = 看空
+区间震荡 = 震荡
+向上突破 = 看多
+尾部极值（向下） = 看空
+```
+
 Recommended construction:
 
 ```text
@@ -212,7 +251,6 @@ this explicitly in the report.
 ## Weights
 
 Weights rank scenarios. They are not calibrated probabilities.
-No single scenario may exceed 50%.
 
 Use state variables:
 
@@ -227,6 +265,25 @@ extreme state
 
 Do not increase a scenario weight because a nearby support has a high historical
 hold rate. Levels do not count as independent evidence dimensions.
+
+### Baseline weights and LLM final weighting
+
+Code starts from a baseline based on weekly regime, funding and breadth. Apply
+structural adjustments with a total cap of ±12 percentage points per scenario
+to produce a reference:
+
+- unreclaimed support break: raise downward continuation, lower key-level test;
+- support reclaimed: reverse that adjustment;
+- weak close near support: modestly raise downward continuation;
+- close in the middle of the decision band: modestly raise key-level test;
+- confirmed time window: modest contextual adjustment to key-level test.
+
+Normalize to 100% and record every adjustment and its reason. This baseline is
+not the final decision. The LLM must review all
+evidence, set the final four weights, direction and execution action, and cite
+the evidence used. Any material deviation from the baseline must be explained.
+The final top two weights use the same 5 percentage-point low-confidence
+threshold.
 
 ## Window confirmation
 

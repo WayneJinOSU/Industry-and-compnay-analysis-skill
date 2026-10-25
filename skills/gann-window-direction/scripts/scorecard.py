@@ -62,7 +62,8 @@ def score_execution(record: dict, bars: pd.DataFrame) -> dict | None:
     if open_price <= 0:
         return None
     no_action_return = close / open_price - 1
-    bias = overlay.get("execution_bias")
+    judgement = record.get("llm_judgement") or {}
+    bias = judgement.get("execution_action") or record.get("action_bias") or overlay.get("execution_bias")
     if bias == "reduce_only":
         action_return = 0.0
         avoided_close_drawdown = max(0.0, -no_action_return)
@@ -76,7 +77,7 @@ def score_execution(record: dict, bars: pd.DataFrame) -> dict | None:
     else:
         return None
     return {
-        "risk_state": overlay.get("risk_state"),
+        "risk_state": judgement.get("risk_state") or overlay.get("risk_state"),
         "execution_bias": bias,
         "open": open_price,
         "high": high,

@@ -182,6 +182,34 @@ snapshot time with `--available-at`. For premarket/post-close runs, omitted
 `leadership_state.py --available-at`. At 09:25, keep daily state computation on
 T-1; target-day auction observations belong only in `execution_overlay`.
 
+Build break/reclaim memory from the previous report's exact defenses, then let
+it apply bounded scenario-weight adjustments:
+
+```bash
+python3 scripts/structure_memory.py \
+  --index-daily /abs/index.csv \
+  --previous-levels /abs/previous_levels.csv \
+  --target-date 2026-10-23 --asof 2026-10-22 \
+  --available-at "2026-10-22T18:00:00+08:00" \
+  --pack /abs/direction_input_pack.enriched.json \
+  --pack-output /abs/direction_input_pack.with_structure.json \
+  --output /abs/structure_memory.json
+
+python3 scripts/scenario_weights.py \
+  --pack /abs/direction_input_pack.with_structure.json \
+  --pack-output /abs/direction_input_pack.with_weights.json \
+  --output /abs/scenario_weights.json
+```
+
+This output is `role=baseline_reference`; it must not be copied directly as the
+final judgement. The LLM reviews the full evidence pack, then writes
+`llm_judgement.json` containing final weights, direction, execution action,
+supporting and opposing evidence, maintenance/release conditions and evidence
+references.
+
+`previous_levels.csv` must contain `level`, `role`, and a source report date.
+The new support band never removes an older unreclaimed break.
+
 Run `conditional_base_rates.py` if the previous day is:
 
 - a large drop;
@@ -213,7 +241,7 @@ python3 scripts/build_level_registry.py \
   --output /abs/levels
 
 python3 scripts/attach_levels.py \
-  --pack /abs/direction_input_pack.enriched.json \
+  --pack /abs/direction_input_pack.with_weights.json \
   --levels /abs/levels/level_registry.csv \
   --output /abs/direction_input_pack.final.json
 ```
@@ -256,7 +284,7 @@ Write every bin with a pure close condition and a complete path forecast:
 
 ```json
 {
-  "name": "breakdown_or_breakout",
+  "name": "upside_breakout",
   "direction": "bearish",
   "weight": 0.25,
   "lower": 3500.0,
@@ -276,10 +304,10 @@ Set the event direction from the highest-weight bin's explicit `direction`.
 In the human report, keep one table but show each scenario's full ordered path,
 close bin, targets and invalidation. Score path and close-bin outcomes separately.
 
-For Chinese reports, present the four close bins in Chinese first. Use the fixed
-labels `趋势延续`, `关键位区间测试`, `关键位突破/破位`, `尾部极值`, with an
-optional parenthetical path description. Keep English ids only in JSON, CSV,
-gate and scorecard artifacts. See
+For Chinese reports, present the four close bins with fixed directionally clear
+labels: `向下延续` (看空), `区间震荡` (震荡), `向上突破` (看多),
+`尾部极值（向下）` (看空). Keep English ids only in JSON, CSV, gate and
+scorecard artifacts. See
 [report-language-zh.md](report-language-zh.md).
 
 Build `execution_overlay` after the close-bin forecast. It does not change any
@@ -296,11 +324,26 @@ python3 scripts/execution_overlay.py \
   --output execution_overlay.json
 ```
 
+Validate and attach the LLM's final judgement before writing the forecast:
+
+```bash
+python3 scripts/validate_llm_judgement.py \
+  --pack direction_input_pack.with_overlay.json \
+  --judgement llm_judgement.json \
+  --pack-output direction_input_pack.final.json
+
+python3 scripts/build_forecast_from_judgement.py \
+  --pack direction_input_pack.final.json \
+  --output forecast_record.json
+```
+
 Copy the identical overlay into `forecast_record.json`. Show one compact
 “执行覆盖” block in the report: three independent states, derived risk state,
 `防守触发`, `恢复进攻触发` and `覆盖失效`. The action rationale must separately
 show `动作维持条件` and `动作解除条件`. A gap fade alone is not defensive.
-Missing snapshots degrade to `unknown`; never invent a signal. Once a
+Missing snapshots degrade to `unknown`; never invent a signal. The code overlay
+and baseline weights are references for the LLM; they do not override its final
+validated judgement. Once a
 `risk_zone_euphoria` premarket setup exists, only accepted pressure plus
 confirming participation can restore offense.
 
@@ -371,6 +414,7 @@ python3 -m py_compile scripts/*.py
 The regression suite covers cutoff filtering, compact numeric dates, future
 timestamps, premarket leadership data, explicit scenario directions, SOX
 degradation, orphan disclosure, neutral scoring, interval overlap, 09:25 feature
-separation, two-sided execution triggers, missing-data degradation and
-pack/forecast overlay consistency.
+separation, two-sided execution triggers, break/reclaim memory, bounded dynamic
+weights, confirmed and unconfirmed external downside shocks, missing-data
+degradation and pack/forecast overlay consistency.
 

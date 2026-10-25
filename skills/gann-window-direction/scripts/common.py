@@ -13,24 +13,24 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-RULESET_VERSION = "2026-10-25.6"
+RULESET_VERSION = "2026-10-25.12"
 TZ = ZoneInfo("Asia/Shanghai")
 
 LAYERS = ("external", "volume", "margin", "breadth", "leadership", "path", "event")
 INFO_VALUES = ("informative", "weak", "uninformative")
 SCENARIO_NAMES = (
-    "trend_continuation",
-    "key_level_test",
-    "breakdown_or_breakout",
-    "tail_extreme",
+    "downside_continuation",
+    "range_oscillation",
+    "upside_breakout",
+    "tail_extreme_down",
 )
 # Canonical Chinese labels for human-facing reports. The English identifiers above
 # remain the machine contract and must not be renamed in JSON/CSV artifacts.
 SCENARIO_REPORT_LABELS = {
-    "trend_continuation": ("趋势延续", "趋势延续情景"),
-    "key_level_test": ("关键位区间测试", "关键位测试", "区间测试"),
-    "breakdown_or_breakout": ("关键位突破/破位", "关键位突破或破位", "突破/破位"),
-    "tail_extreme": ("尾部极值", "尾部极端情景", "极端情景", "极端风险"),
+    "downside_continuation": ("向下延续", "向下破位"),
+    "range_oscillation": ("区间震荡",),
+    "upside_breakout": ("向上突破",),
+    "tail_extreme_down": ("尾部极值（向下）", "尾部极值"),
 }
 # Human-facing report labels. Canonical English field names and enum values remain
 # the machine contract in JSON/CSV, but reports present this Chinese display layer.
@@ -82,12 +82,12 @@ REPORT_VALUE_LABELS_ZH = {
     "structural_bias": {
         "bullish": ("偏多", "看多"),
         "bearish": ("偏空", "看空"),
-        "neutral": ("中性",),
+        "neutral": ("震荡", "中性"),
     },
     "direction": {
         "bullish": ("偏多", "看多"),
         "bearish": ("偏空", "看空"),
-        "neutral": ("中性",),
+        "neutral": ("震荡", "中性"),
     },
     "window_state": {
         "unresolved": ("未决",),
@@ -160,7 +160,6 @@ REPORT_VALUE_LABELS_ZH = {
         "add_only_after_confirmation": ("确认后恢复进攻", "确认后加仓"),
     },
 }
-MAX_SCENARIO_WEIGHT = 0.50
 STAGE_PREDICTION = {
     "premarket": "prospective",
     "preopen_0925": "prospective",
@@ -355,11 +354,16 @@ def validate_scenarios(scenarios: list[dict], interval_convention: str = "lower_
         errors.append("every scenario must declare direction explicitly")
     if any(float(row.get("weight", 0)) < 0 for row in scenarios):
         errors.append("scenario weights cannot be negative")
-    if any(float(row.get("weight", 0)) > MAX_SCENARIO_WEIGHT for row in scenarios):
-        errors.append(f"single scenario weight cannot exceed {MAX_SCENARIO_WEIGHT:.0%}")
+    expected_directions = {
+        "downside_continuation": "bearish",
+        "range_oscillation": "neutral",
+        "upside_breakout": "bullish",
+        "tail_extreme_down": "bearish",
+    }
     for row in scenarios:
-        if row.get("name") == "key_level_test" and row.get("direction") != "neutral":
-            errors.append("key_level_test direction must be neutral")
+        expected = expected_directions.get(row.get("name"))
+        if expected and row.get("direction") != expected:
+            errors.append(f"{row.get('name')} direction must be {expected}")
     try:
         ordered = sorted(
             [(row.get("name"), float(row["lower"]), float(row["upper"])) for row in scenarios],

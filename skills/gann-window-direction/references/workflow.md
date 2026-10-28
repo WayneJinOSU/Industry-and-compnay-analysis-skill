@@ -6,15 +6,13 @@ For A-share OHLCV, breadth, amount and margin:
 
 1. KH local DuckDB or an audited local KH export.
 2. Tushare structured data when KH coverage is incomplete.
-3. Wencai only for market-internal fields that need natural-language screening.
+3. Wencai only for market-internal fields suited to natural-language screening.
 
-For external markets, use the adapter named in `source_used`. Record a real
-adapter call or a real failure; never hardcode a primary-source failure that was
-not attempted.
+Record the actual adapter and failure. Never claim an unattempted primary-source
+failure. Every observation carries `source`, `data_asof`, `available_at` and
+`data_quality`.
 
 ## 1. Freeze the decision context
-
-Write these fields before collecting evidence:
 
 ```text
 target_date
@@ -26,384 +24,147 @@ timezone
 symbol
 ```
 
-`forecast_cutoff` is the wall-clock decision time.  `feature_cutoff` is the
-latest time at which a feature may have been known.  For premarket A-share data,
-the last daily observation must be earlier than `target_date`.
+Premarket daily observations must be earlier than target date. Intraday runs use
+the actual snapshot time. Historical replay is `backfill` even when it imitates a
+premarket decision.
 
-Every recorded observation must have:
+## 2. Audit upstream structure
 
-```text
-source
-data_asof
-available_at
-data_quality
-```
+Read Gann target/pivot/confirmation dates, time family, causal sources and space
+levels. Read wave parent ledger, preferred/alternative counts, confirmation,
+re-judgement and hard invalidation. Do not invent missing upstream anchors.
 
-The gates reject future or unverifiable timestamps. A data provider's current
-value cannot be relabeled as a historical observation.
+## 3. Build external and deterministic evidence
 
-## 2. Build the upstream structure
+Run `external_snapshot.py`, `merge_external.py`, `leadership_state.py` and
+`state_inputs.py` as shown in `SKILL.md`. Scripts filter every dated input before
+calculation. External Asia records must be snapshots available at cutoff.
 
-### Gann
+`state_inputs.py` produces factual states and information content only. It does
+not emit weight priors, reversal floors or a direction.
 
-Read or create:
+Run `structure_memory.py` using previous exact levels. It preserves unreclaimed
+breaks and pressure-test history and uses the shared Wilder 14-session ATR.
 
-```text
-target_date
-pivot_date
-confirm_date
-time_family
-independent_causal_sources
-space_levels
-important_time_points
-```
+Conditional base rates and extreme-state statistics may be supplied as evidence
+when relevant. They never impose scenario percentages or reversal floors.
 
-All anchors require `confirm_date < target_date`. Use one dated observation per
-important time point; keep tolerances in the audit files.
-
-When embedding the Gann result in the direction pack, add:
-
-```text
-as_of
-available_at
-source
-```
-
-### Wave
-
-Read or create:
-
-```text
-parent_1_to_5_ledger
-active_degree
-preferred_count
-strongest_alternative
-confirmation_level
-rejudgement_level
-hard_invalidation
-wave_confidence
-```
-
-If the upstream result is absent, run the owning skill. Do not invent an anchor
-inside this direction layer.
-
-The embedded wave result likewise needs:
-
-```text
-latest_data_asof
-available_at
-source
-```
-
-## 3. Build external snapshots
-
-Choose the external anchor by transmission relevance:
-
-```text
-tier_1: A50, China proxies, HSI when open
-tier_2: N225, KOSPI, TWII, AS51
-tier_3: US indices, Europe, SOX
-```
-
-At a premarket cutoff, include:
-
-- completed US/Europe sessions;
-- the last China proxy observation available by cutoff;
-- exact Asia minute snapshots at or before cutoff;
-- completed gold observations available by cutoff.
-
-An unopened market is `not_yet_open`; an absent historical minute series is
-`missing` or `provider_error`. Neither is neutral.
-
-```bash
-python3 scripts/init_pack.py \
-  --output /abs/output/base_pack.json --symbol 000001.SH \
-  --target-date 2026-10-23 \
-  --forecast-cutoff "2026-10-23T09:00:00+08:00" \
-  --feature-cutoff "2026-10-23T09:00:00+08:00" \
-  --decision-stage premarket --prediction-type backfill
-
-python3 scripts/external_snapshot.py \
-  --cutoff "2026-10-23T09:00:00+08:00" \
-  --output /abs/output/external
-
-python3 scripts/merge_external.py \
-  --pack /abs/output/base_pack.json \
-  --external /abs/output/external/external_snapshot.json \
-  --output /abs/output/direction_input_pack.json
-```
-
-`merge_external.py` writes canonical codes (`IXIC`, `NDX`, `SPX`, `DJI`, `SOX`,
-`N225`, `KS11`, `TWII`, `AS51`, `HSI`, `XIN9`). Do not maintain a second alias
-mapping in prose.
-
-## 4. Compute deterministic state
-
-First compute the leadership state:
-
-```bash
-python3 scripts/leadership_state.py \
-  --basket /abs/basket.csv \
-  --leader-bars /abs/leader_bars.csv \
-  --index-bars /abs/index.csv \
-  --breadth /abs/market.csv \
-  --target-date 2026-10-23 \
-  --asof 2026-10-22 \
-  --stage premarket \
-  --output /abs/leadership.json
-```
-
-For `intraday_partial`, pass the actual `--available-at`. A premarket call with
-`asof >= target_date` is rejected.
-
-```bash
-python3 scripts/state_inputs.py \
-  --index-daily /abs/index.csv \
-  --market-daily /abs/market.csv \
-  --margin /abs/margin.csv \
-  --leadership-json /abs/leadership.json \
-  --external /abs/direction_input_pack.json \
-  --asof 2026-10-22 \
-  --feature-cutoff "2026-10-23T09:00:00+08:00" \
-  --forecast-cutoff "2026-10-23T09:00:00+08:00" \
-  --stage premarket \
-  --extreme-stats /abs/extreme/extreme_state_stats.json \
-  --pack-output /abs/direction_input_pack.enriched.json \
-  --output /abs/state
-```
-
-The script filters every frame before computation and records actual coverage.
-If an input has later rows, they are excluded and listed under
-`input_coverage`.
-
-For `preopen_0925`, `intraday_open` or `intraday_update`, pass the actual
-snapshot time with `--available-at`. For premarket/post-close runs, omitted
-`--available-at` defaults to 18:00 on `data_asof`. The same rule applies to
-`leadership_state.py --available-at`. At 09:25, keep daily state computation on
-T-1; target-day auction observations belong only in `execution_overlay`.
-
-Build break/reclaim memory from the previous report's exact defenses, then let
-it apply bounded scenario-weight adjustments:
-
-```bash
-python3 scripts/structure_memory.py \
-  --index-daily /abs/index.csv \
-  --previous-levels /abs/previous_levels.csv \
-  --target-date 2026-10-23 --asof 2026-10-22 \
-  --available-at "2026-10-22T18:00:00+08:00" \
-  --pack /abs/direction_input_pack.enriched.json \
-  --pack-output /abs/direction_input_pack.with_structure.json \
-  --output /abs/structure_memory.json
-
-python3 scripts/scenario_weights.py \
-  --pack /abs/direction_input_pack.with_structure.json \
-  --pack-output /abs/direction_input_pack.with_weights.json \
-  --output /abs/scenario_weights.json
-```
-
-This output is `role=baseline_reference`; it must not be copied directly as the
-final judgement. The LLM reviews the full evidence pack, then writes
-`llm_judgement.json` containing final weights, direction, execution action,
-supporting and opposing evidence, maintenance/release conditions and evidence
-references.
-
-`previous_levels.csv` must contain `level`, `role`, and a source report date.
-The new support band never removes an older unreclaimed break.
-
-Run `conditional_base_rates.py` if the previous day is:
-
-- a large drop;
-- a low close;
-- a day-over-day volume expansion;
-- above the prior 20-day mean volume.
-
-The last two are separate states. Do not substitute one for the other.
-
-Run `extreme_state_stats.py --asof <feature_date> --stage <stage>` whenever the
-current state has an extreme breadth or funding flag. For intraday data, pass
-the exact snapshot time through `--available-at`.
-
-## 5. Build structural levels
-
-Use the multi-lens registry, not a raw Gann table:
+## 4. Build current levels before judgement
 
 ```bash
 python3 scripts/build_level_registry.py \
-  --db /abs/kh_duckdb \
-  --stage premarket \
-  --asof 2026-10-22 \
-  --target-date 2026-10-23 \
-  --gann-results /abs/gann \
+  --db /abs/kh_duckdb --stage premarket --asof 2026-10-22 \
+  --target-date 2026-10-23 --gann-results /abs/gann \
   --wave-anchors /abs/wave_anchors.csv \
   --previous-levels /abs/previous_levels.csv \
-  --require-handoff \
-  --symbol 000001.SH \
-  --output /abs/levels
+  --require-handoff --symbol 000001.SH --output /abs/levels
 
 python3 scripts/attach_levels.py \
-  --pack /abs/direction_input_pack.with_weights.json \
+  --pack /abs/pack.with_structure.json \
   --levels /abs/levels/level_registry.csv \
-  --output /abs/direction_input_pack.final.json
+  --output /abs/pack.with_levels.json
+
+python3 scripts/level_context.py \
+  --pack /abs/pack.with_levels.json \
+  --levels /abs/levels/level_registry.csv \
+  --output /abs/level_context.json \
+  --pack-output /abs/pack.with_context.json
 ```
 
-Production handoff requires a previous-levels file whose source report is
-strictly earlier than `target_date`. The registry writes:
+The level registry and structure memory must both declare `wilder_14` and agree
+on ATR. `level_context.py` rejects mismatches. Its current price anchors and
+weight-free close bins are the only path-price and settlement inputs.
 
-```text
-level_registry.csv
-level_ladder.csv
-same_origin_bands.csv
-level_registry_summary.json
-```
+There is no `scenario_weights.py` step.
 
-Every zone records member levels, lens count, behaviour metrics,
-`formation_window`, cluster role and cluster type. A spatial cluster is not called
-`same_origin_cluster` unless its formation dates fall inside one declared wave
-leg.
+## 5. Build the execution fact layer
 
-For `--stage intraday`, also pass `--available-at` with the partial snapshot
-time. The registry rejects a premarket `asof` on or after the target date.
+Run `execution_overlay.py` after current levels exist. At 09:00 omit the
+snapshot; at 09:25 or intraday provide the actual snapshot. The overlay supplies
+only gap, pressure, participation, premarket risk facts, timestamps and data gaps.
+It must not generate a setup score, risk state, execution action, action rationale
+or conditional action path. Those decisions belong exclusively to the LLM.
 
-## 6. Construct the decision
+## 6. Submit LLM judgement
 
-Start with the event-level thesis:
+The LLM reads the full pack and writes `llm_judgement.json` according to
+`llm-judgement.md` and `contract.md`.
 
-1. Structural trend and active wave.
-2. Previous price path and failed reclaims.
-3. Support and pressure band interaction.
-4. External mapping.
-5. Volume, margin, breadth and leadership.
-6. Gann time/space as an ordering layer.
+Decision order:
 
-Construct four mutually exclusive close bins. A price inside the support-pressure
-decision band is a key-level test. A close beyond a structural boundary is
-continuation or breakout/breakdown depending on the declared direction. The tail
-threshold must be an abnormal, predeclared level.
+1. Medium-term structure and its invalidation.
+2. Window state and actual confirmation conditions.
+3. Next-day opening → intraday → close baseline using registered price anchors.
+4. Upside/downside switches and independent tail risk.
+5. Structure/path divergence when applicable.
+6. Execution state, action, opposing evidence and maintenance/release conditions.
 
-Write every bin with a pure close condition and a complete path forecast:
+No numerical confidence or scenario weight is requested. The baseline is chosen
+by the LLM, not by sorting code-generated percentages.
 
-```json
-{
-  "name": "upside_breakout",
-  "direction": "bearish",
-  "weight": 0.25,
-  "lower": 3500.0,
-  "upper": 3602.15,
-  "close_condition": "close below the support-band defense",
-  "path_forecast": {
-    "opening": "flat or lower open",
-    "steps": ["failed rebound at band support", "renewed sell-through and weak close"],
-    "confirmation": "support rejects the rebound and price accepts below it",
-    "targets": [3480.0, 3450.0],
-    "invalidation": "close reclaims 3602.15"
-  }
-}
-```
+Populate `critical_evidence` with factual conditional rates and critical levels
+only. Do not copy `core_thesis`, `next_day_baseline`, `structure_path_audit` or
+`direction_audit` into it: `llm_judgement` is the sole decision source.
+Conditional rates use `used_in_judgement`, never `used_in_weights`.
 
-Set the event direction from the highest-weight bin's explicit `direction`.
-In the human report, keep one table but show each scenario's full ordered path,
-close bin, targets and invalidation. Score path and close-bin outcomes separately.
-
-For Chinese reports, present the four close bins with fixed directionally clear
-labels: `向下延续` (看空), `区间震荡` (震荡), `向上突破` (看多),
-`尾部极值（向下）` (看空). Keep English ids only in JSON, CSV, gate and
-scorecard artifacts. See
-[report-language-zh.md](report-language-zh.md).
-
-Build `execution_overlay` after the close-bin forecast. It does not change any
-scenario weight or path. At 09:25 use `decision_stage=preopen_0925`, cutoff
-09:25:00 and a final call-auction snapshot; keep the existing `premarket/`
-directory. Read [execution-overlay.md](execution-overlay.md) for the complete
-schema and run:
-
-```bash
-python3 scripts/execution_overlay.py \
-  --pack direction_input_pack.final.json --snapshot auction_0925.json \
-  --pressure-low 3690.95 --pressure-high 3700.82 --support 3606.94 \
-  --pack-output direction_input_pack.with_overlay.json \
-  --output execution_overlay.json
-```
-
-Validate and attach the LLM's final judgement before writing the forecast:
+Validate and build:
 
 ```bash
 python3 scripts/validate_llm_judgement.py \
-  --pack direction_input_pack.with_overlay.json \
-  --judgement llm_judgement.json \
-  --pack-output direction_input_pack.final.json
+  --pack /abs/pack.with_overlay.json \
+  --judgement /abs/llm_judgement.json \
+  --pack-output /abs/direction_input_pack.json
 
 python3 scripts/build_forecast_from_judgement.py \
-  --pack direction_input_pack.final.json \
-  --output forecast_record.json
+  --pack /abs/direction_input_pack.json \
+  --output /abs/forecast_record.json
 ```
 
-Copy the identical overlay into `forecast_record.json`. Show one compact
-“执行覆盖” block in the report: three independent states, derived risk state,
-`防守触发`, `恢复进攻触发` and `覆盖失效`. The action rationale must separately
-show `动作维持条件` and `动作解除条件`. A gap fade alone is not defensive.
-Missing snapshots degrade to `unknown`; never invent a signal. The code overlay
-and baseline weights are references for the LLM; they do not override its final
-validated judgement. Once a
-`risk_zone_euphoria` premarket setup exists, only accepted pressure plus
-confirming participation can restore offense.
+## 7. Write the report
 
-## 7. Gate and freeze
+Write a concise Chinese `report.md` and complete `audit.md`.
 
-First preflight without a manifest:
+The decision card leads with structure, window, next-day baseline, opening zone,
+intraday zone, close zone/character and execution. The body presents one baseline
+path plus switches and tail risk. Script-generated execution risk facts and the
+LLM's execution discretion appear in separate sections. The audit carries the
+weight-free close bins.
 
-```bash
-python3 scripts/direction_gate.py \
-  --report report.md --audit audit.md --pack direction_input_pack.json \
-  --forecast forecast_record.json --level-registry level_registry.csv \
-  --preflight --output gate-preflight
-```
+Do not display an event-day total direction, scenario weights, numerical
+confidence or weight-confidence labels. Do not describe a wide-range lower-edge
+close as balanced oscillation.
 
-The output contains `preflight_status`. Translate that status into the Chinese
-value in the report-information table's `门禁状态` row and re-run preflight once.
-For example, `passed_with_warnings` is displayed as `带警告通过`. Freeze only
-after no hard failure remains:
+## 8. Gate and freeze
 
-```bash
-python3 scripts/freeze_snapshot.py \
-  --stage-dir /abs/stage --stage premarket \
-  --prediction-type prospective \
-  --forecast-cutoff "2026-10-23T09:00:00+08:00" \
-  --target-date 2026-10-23
-```
+Run preflight, update the declared gate status before freezing, freeze once and
+run final verification. A failed final gate invalidates the snapshot; never edit
+frozen files to repair it.
 
-The final gate runs after the freeze:
+New hard failures include old weight/confidence fields, missing path stages,
+unregistered price anchors, inconsistent report/forecast zones and missing
+structure/path divergence.
 
-```bash
-python3 scripts/direction_gate.py \
-  --report report.md --audit audit.md --pack direction_input_pack.json \
-  --forecast forecast_record.json --level-registry level_registry.csv \
-  --manifest snapshot_manifest.json --output gate
-```
+## 9. Review
 
-The final gate reports `final_gate_status`. It never edits frozen files. If final
-verification fails, archive the failed snapshot and rerun from preflight.
+Record actual open, high, low and close against the frozen baseline. Separately
+settle opening zone, intraday range, close zone, close location and character.
+Wide-range edge coverage is fragile and reported separately.
 
-## 8. Review
+Daily OHLC does not reveal whether the high or low occurred first. Without real
+intraday evidence, ordered-path settlement is `unavailable_from_daily_ohlc`.
+Record trigger behavior and actual execution outcome separately, without
+execution scoring.
 
-Post-close review records:
+Attribution categories:
 
 ```text
-prior forecast
-actual path
-final branch
-target hit
-invalidation behavior
-external mapping outcome
-leadership outcome
-data gaps
-attribution: data_gap | classification | weighting | rule_gap
+data_gap | classification | judgement | rule_gap
 ```
 
-A backfill result is displayed separately and never added to prospective accuracy.
+Legacy weighted forecasts remain in a separate scoring branch. Never mix their
+accuracy with path metrics.
 
-## 9. Skill maintenance checks
-
-Before distributing a modified copy:
+## 10. Maintenance checks
 
 ```bash
 python3 scripts/selftest.py
@@ -411,10 +172,7 @@ python3 ~/.codex/skills/.system/skill-creator/scripts/quick_validate.py .
 python3 -m py_compile scripts/*.py
 ```
 
-The regression suite covers cutoff filtering, compact numeric dates, future
-timestamps, premarket leadership data, explicit scenario directions, SOX
-degradation, orphan disclosure, neutral scoring, interval overlap, 09:25 feature
-separation, two-sided execution triggers, break/reclaim memory, bounded dynamic
-weights, confirmed and unconfirmed external downside shocks, missing-data
-degradation and pack/forecast overlay consistency.
-
+Regression covers point-in-time filtering, unified ATR, current price anchors,
+weight-free judgement, three-stage paths, conditional switches, close-bin
+geometry, report consistency, execution constraints, legacy scoring separation
+and manifest integrity.

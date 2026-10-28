@@ -1,12 +1,14 @@
 ---
 name: gann-window-direction
-description: Produce point-in-time A-share index direction reports by combining verified Gann time/space, wave structure, structural price levels, external markets, breadth, funding and leadership. Use for premarket/intraday/backfill window decisions, level interaction, scenario construction, gating and post-close attribution. Do not use Gann dates as standalone buy/sell signals.
+description: Produce point-in-time A-share index structure and next-day path reports by combining verified Gann time/space, wave structure, current price anchors, external markets, breadth, funding and leadership. Use for premarket/intraday/backfill window decisions, conditional path construction, execution gating and post-close attribution. Do not use Gann dates as standalone buy/sell signals.
 ---
 
 # Gann Window Direction
 
-Turn upstream Gann and wave evidence into an auditable, point-in-time direction
-decision. Separate structural bias, event-day direction and execution state.
+Turn upstream Gann and wave evidence into an auditable, point-in-time discretionary
+judgement. Code computes facts, current price anchors, settlement geometry, execution
+risk evidence and timestamps. The LLM solely owns structural bias, window state, the
+next-day baseline path, conditional switches, risk state and the final execution judgement.
 
 ## Non-negotiable rules
 
@@ -16,112 +18,84 @@ decision. Separate structural bias, event-day direction and execution state.
    `data_asof <= feature_cutoff`. Missing availability time means the input
    cannot support a formal decision.
 3. A-share daily data for premarket must end before `target_date`. Asia markets
-   use only the historical minute snapshot at or before cutoff. Never substitute
-   target-day close data for a premarket snapshot.
+   use only historical snapshots available at or before cutoff.
 4. Gann dates define observation moments, not direction. Price structure and
-   accepted close behavior decide the direction.
-5. `structural_bias`, `direction` and `execution_state` are independent.
-   `direction` is the explicit direction of the highest-weight close bin.
-6. Four close bins are mandatory and contiguous. Every bin declares its own
-   `direction`; never infer direction from a bin name.
-7. A missing evidence layer is `uninformative`, not neutral. Downgrade it only
-   when the gap is registered and the layer is excluded from weighting.
-8. Do not create a final directional report when a hard gate fails.
-9. After a snapshot is frozen, never edit the report, pack or forecast to repair
-   a failed final check. Discard that snapshot and return to preflight.
-10. Report `backfill` separately. It never enters prospective accuracy.
-11. Keep canonical English scenario ids in JSON/CSV and gates. In a Chinese
-    user-facing report, lead with the standard Chinese labels below; add a short
-    plain-language subtitle when it improves readability.
-12. All user-facing narrative must be Chinese-only. This includes the final
-    response, report titles, headings, prose, table labels, explanations,
-    warnings, display tables and conclusions. Report headers, decision cards and
-    execution-overlay displays must translate both field names and enum values
-    into Chinese. Keep canonical English identifiers only in JSON/CSV/YAML,
-    gate/scorecard artifacts, file paths and required securities identifiers.
-    Never expose a raw machine field/value block as the primary report display;
-    every report display must have a direct Chinese label and Chinese value.
-13. Every action recommendation must include its rationale. State the action,
-    at least two forward-looking reasons, at least one strongest opposing
-    observation, the conditions that maintain the current action, the conditions
-    that release or invalidate it, the applicable horizon and the next review
-    point. Never use one ambiguous confirmation field for both maintenance and
-    release. Action invalidation contains only evidence that overturns the
-    current action.
-14. Quantitative values must use Arabic numerals in every human-facing report.
-    Prices, percentages, dates, times, durations, amounts, ratios, scores,
-    counts and versions must be written as digits with their usual symbols or
-    units. Never write `三千九百五十八点零三`, `百分之四点二九`,
-    `九月二十二日`, `十三周` or `零点一八八倍`; write `3958.03`, `4.29%`,
-    `9月22日`, `13周` and `0.188倍`. Chinese number words are allowed only in
-    established qualitative labels such as `第四浪`; navigation and grammar
-    phrases such as `下一交易日` are not quantities and must not be rewritten
-    as `下1交易日`.
-15. Keep a point-in-time break-and-reclaim memory from the previous report's
-    support and pressure defenses. A newly generated defense band must not erase
-    an older broken support until a close reclaims it. Also record pressure
-    tests, failed closes, consecutive failures, last test time and test volume
-    from completed daily bars. A wide decision band may not receive an inflated
-    range weight merely because it is wide. Code may derive a baseline weight
-    reference, but the final four-scenario weights, direction, execution action
-    and operation advice belong to the LLM judgement. Code validates the
-    arithmetic, timestamps, allowed states, fixed scenario directions and
-    evidence/rationale completeness. When the final top two weights differ by
-    less than 5 percentage points, the result must be marked low-confidence.
-16. External catalysts are symmetric. Positive high-beta acceleration near
-    supply and confirmed negative US-semiconductor/Nasdaq shocks near weak
-    support both raise execution risk. A negative external shock requires Asia
-    confirmation and cannot by itself set the event-day close direction.
-17. The comprehensive judgement must be submitted by the LLM as a structured
-    record before prose writing. It owns final scenario weights, direction,
-    execution state, action and rationale. The forecast must be generated from
-    that record; the code baseline, risk overlay and gate are references and
-    constraints, not hidden substitutes for the LLM decision.
+   accepted close behavior determine structural and window states.
+5. Keep `structural_bias`, `window_state`, `next_day_path` and `execution_state`
+   independent. An unresolved window does not imply neutral structure. A strong
+   next-day repair does not by itself reverse bearish structure.
+6. Do not generate scenario weights, numerical confidence, confidence margins,
+   low-confidence labels, execution scores, or a top-level event-day direction.
+   Never select a baseline by ranking hardcoded percentages.
+7. The next-day baseline must contain numeric opening, intraday and close zones,
+   at least two ordered intraday observations, upside/downside switches and an
+   independent tail-risk path.
+8. Every numeric path level must come from the current `level_context` anchor
+   registry. The LLM must not invent prices. Use zones and observation anchors,
+   not false precision or guaranteed arrival claims.
+9. Four close bins remain mandatory for settlement only. They are contiguous,
+   carry no weights and do not determine the report headline or structural bias.
+10. Missing evidence is `uninformative`, not neutral. Register the gap and do not
+    use that layer as decisive evidence.
+11. Do not create a final report when a hard gate fails. After a snapshot is
+    frozen, never edit it to repair a failed final check; discard and rerun.
+12. Report `backfill` separately. It never enters prospective accuracy.
+13. All user-facing narrative must be Chinese-only. Canonical English ids remain
+    in JSON/CSV/YAML, gates, scorecards and file paths.
+14. Every action recommendation needs at least two forward-looking reasons, the
+    strongest opposing observation, maintenance conditions, invalidation
+    conditions, horizon and next review point.
+15. Quantitative values use Arabic numerals and normal units.
+16. Keep break-and-reclaim memory from previous exact defenses. A newly generated
+    band must not erase an older broken support until a close reclaims it.
+17. Use one ATR definition everywhere: `wilder_14`, computed by `common.py` from
+    the same completed daily history.
+18. Build the current level registry and `level_context` before LLM judgement.
+    No scenario-weight step exists in the pipeline. `execution_overlay` supplies
+    facts only and must not generate scores, risk states, actions or action reasons.
+19. The LLM submits its structured record before prose. Code validates timestamps,
+    states, evidence references, current price anchors, path completeness and
+    execution rationale; it does not secretly replace the discretionary view or
+    rederive an expected execution action.
+20. Separate `structure_invalidation`, `baseline_path_invalidation` and
+    `action_invalidation`. Leaving a next-day range is not automatically a
+    medium-term structural reversal.
+21. `llm_judgement` is the only decision copy. `critical_evidence` contains factual
+    rates and levels, never a duplicate thesis, baseline or structure/path audit.
+22. Close-location labels must match close-zone/support/pressure geometry. Overlay
+    thresholds must use the current decision band and registered anchors. Level
+    registration exposes raw evidence without heuristic scores or tiers.
 
 ## Upstream inputs
 
-Obtain both before writing the direction report:
+Obtain both before writing the report:
 
 - **Gann**: target date, pivot and confirmation dates, important time points,
-  support/pressure member zones, and causal-source counts.
-- **Wave**: parent 1-5 ledger, active wave, preferred/alternative counts,
+  support/pressure member zones and causal-source counts.
+- **Wave**: parent ledger, active wave, preferred/alternative counts,
   confirmation, re-judgement and hard invalidation levels.
 
-If either is absent, run the owning upstream skill:
-
-- `gann-space-resonance` for index time/space evidence.
-- `weekly-index-wave-scenarios` for wave and market-confirmation structure.
-
-Read [references/workflow.md](references/workflow.md) for the complete execution
-sequence and data cutoffs.
+If either is absent, run `gann-space-resonance` or
+`weekly-index-wave-scenarios`. Do not invent upstream anchors in this layer.
 
 ## Decision stages
 
-| Stage | A-share feature cutoff | Market context | Prediction type |
-|---|---|---|---|
-| `premarket` | last completed session before target | tier-1 proxy and any Asia minute data before cutoff | `prospective` only when generated before target open |
-| `preopen_0925` | optional enhancement: daily features remain T-1; auction fields stay in a separate target-day snapshot | final 09:25 call-auction snapshot only | `prospective`; archive under `premarket/` |
-| `intraday_open` | prior close plus explicitly marked partial target-day data | live context through update time | `prospective` |
-| `intraday_update` | prior close plus partial target-day data | live context through update time | `prospective` |
-| `post_close_review` | target-day close | full target-day context | comparison with frozen prerecorded forecast |
-| historical replay | data available before the original cutoff | replay-safe snapshot | `backfill` |
+| Stage | A-share feature cutoff | Prediction type |
+|---|---|---|
+| `premarket` | last completed session before target | `prospective` only before target open |
+| `preopen_0925` | daily features remain T-1; separate 09:25 auction snapshot | `prospective`; archive under `premarket/` |
+| `intraday_open` / `intraday_update` | prior close plus explicitly marked partial data | `prospective` |
+| `post_close_review` | target-day close | comparison with frozen forecast |
+| historical replay | data available before original cutoff | `backfill` |
 
-If a historical replay is run after the event, `prediction_type=backfill` even
-when the requested decision was premarket.
-
-`premarket` at 09:00 is the default for this skill. Call-auction data is an
-optional enhancement, never a required foundation. The premarket execution
-prior must be derivable from completed daily structure, Gann windows, structural
-levels, external-market catalysts and daily volume/breadth. If 09:25 data is
-available, it may update that prior but cannot create the only path to a
-defensive action.
+Premarket at 09:00 is the default. Auction data is an optional enhancement, not
+the only route to a defensive action.
 
 ## Required pipeline
 
 Run from the skill directory:
 
 ```bash
-# 1. Initialize metadata, then build and merge a timestamped external snapshot.
 python3 scripts/init_pack.py \
   --output <base_pack.json> --symbol <index> \
   --target-date <target_date> --forecast-cutoff "<forecast_cutoff>" \
@@ -130,13 +104,10 @@ python3 scripts/init_pack.py \
 
 python3 scripts/external_snapshot.py \
   --cutoff "<forecast_cutoff>" --output <external_dir>
-
-# 2. Merge it into the input pack. Do not manually rename foreign-market codes.
 python3 scripts/merge_external.py \
   --pack <base_pack.json> --external <external_dir>/external_snapshot.json \
   --output <pack.json>
 
-# 3. Compute point-in-time leadership and state variables.
 python3 scripts/leadership_state.py \
   --basket <basket.csv> --leader-bars <leaders.csv> --index-bars <index.csv> \
   --breadth <market.csv> --target-date <target_date> --asof <feature_date> \
@@ -147,214 +118,139 @@ python3 scripts/state_inputs.py \
   --index-daily <csv> --market-daily <csv> --margin <csv> \
   --external <pack.json> --asof <feature_date> \
   --feature-cutoff "<feature_cutoff>" --forecast-cutoff "<forecast_cutoff>" \
-  --stage <premarket|intraday_open|intraday_update|post_close_review> \
-  [--leaders <csv>] [--leadership-json <json>] [--extreme-stats <json>] \
+  --stage <stage> [--leadership-json <leadership.json>] \
   --pack-output <pack.enriched.json> --output <state_dir>
 
 python3 scripts/structure_memory.py \
   --index-daily <csv> --previous-levels <previous_levels.csv> \
   --target-date <target_date> --asof <feature_date> \
-  --available-at "<available_at>" \
-  --pack <pack.enriched.json> --pack-output <pack.with_structure.json> \
-  --output <structure_memory.json>
+  --available-at "<available_at>" --pack <pack.enriched.json> \
+  --pack-output <pack.with_structure.json> --output <structure_memory.json>
 
-python3 scripts/scenario_weights.py \
-  --pack <pack.with_structure.json> \
-  --pack-output <pack.with_weights.json> \
-  --output <scenario_weights.json>
-
-# `scenario_weights.json` is a baseline reference. It is not the final decision.
-
-# 4. Run conditional base rates when the prior session is a crash, low close
-#    or volume outlier.
+# Conditional and extreme statistics are optional evidence, never weight rules.
 python3 scripts/conditional_base_rates.py \
   --index-daily <long_history.csv> --asof <feature_date> \
   --lookback-start 2015-01-01 --stage <stage> --output <base_rate_dir>
-
-# 5. Run extreme-state distributions when an extreme flag is active.
 python3 scripts/extreme_state_stats.py \
   --index-daily <long_history.csv> --asof <feature_date> \
   [--margin <csv>] [--breadth <csv>] --stage <stage> --output <extreme_dir>
 
-# 6. Build the multi-lens level registry. Production calls require handoff.
+# Current levels come before path judgement.
 python3 scripts/build_level_registry.py \
   --db <kh_duckdb> --stage premarket --asof <feature_date> \
   --target-date <target_date> --gann-results <gann_dir> \
   --wave-anchors <wave_anchors.csv> --previous-levels <previous_levels.csv> \
   --require-handoff --symbol <index> --output <levels_dir>
-
 python3 scripts/attach_levels.py \
-  --pack <pack.with_weights.json> \
-  --levels <levels_dir>/level_registry.csv \
-  --output <pack.final.json>
+  --pack <pack.with_structure.json> --levels <levels_dir>/level_registry.csv \
+  --output <pack.with_levels.json>
+python3 scripts/level_context.py \
+  --pack <pack.with_levels.json> --levels <levels_dir>/level_registry.csv \
+  --output <level_context.json> --pack-output <pack.with_context.json>
 
-# Build the independent execution layer. For the normal 09:00 premarket stage,
-# omit --snapshot: the prior is derived causally from the pack. Add --snapshot
-# only for an optional 09:25 or intraday update.
 python3 scripts/execution_overlay.py \
-  --pack <pack.final.json> [--snapshot <auction_0925_or_intraday.json>] \
+  --pack <pack.with_context.json> [--snapshot <auction_or_intraday.json>] \
   --pressure-low <level> --pressure-high <level> --support <level> \
   --pack-output <pack.with_overlay.json> --output <execution_overlay.json>
 
-# 7. The LLM reads the complete point-in-time pack, baseline weights and execution
-#    reference, then writes llm_judgement.json with final weights, direction,
-#    execution action and rationale. Validate and attach it before building the
-#    forecast.
+# The LLM reads the complete pack and writes llm_judgement.json.
 python3 scripts/validate_llm_judgement.py \
-  --pack <pack.with_overlay.json> \
-  --judgement <llm_judgement.json> \
+  --pack <pack.with_overlay.json> --judgement <llm_judgement.json> \
   --pack-output <pack.final.json>
-
 python3 scripts/build_forecast_from_judgement.py \
   --pack <pack.final.json> --output <forecast_record.json>
 
-# 8. Write a concise report.md plus a complete audit.md. Copy the identical
-#    execution_overlay object into the forecast. Schemas are defined in
-#    references/contract.md.
-
-# 9. Preflight, write the declared status, freeze once, then verify externally.
+# Write report.md and audit.md, then preflight, freeze and verify.
 python3 scripts/direction_gate.py \
   --report <stage>/report.md --audit <stage>/audit.md \
   --pack <stage>/direction_input_pack.json \
   --forecast <stage>/forecast_record.json \
   --level-registry <stage>/level_registry.csv \
   --preflight --output <stage>/gate-preflight
-
 python3 scripts/freeze_snapshot.py \
   --stage-dir <stage> --stage <premarket|backfill|intraday|postclose> \
   --prediction-type <prospective|backfill> \
   --forecast-cutoff "<forecast_cutoff>" --target-date <target_date>
-
 python3 scripts/direction_gate.py \
   --report <stage>/report.md --audit <stage>/audit.md \
   --pack <stage>/direction_input_pack.json \
   --forecast <stage>/forecast_record.json \
   --level-registry <stage>/level_registry.csv \
-  --manifest <stage>/snapshot_manifest.json \
-  --output <stage>/gate
+  --manifest <stage>/snapshot_manifest.json --output <stage>/gate
 
-# 10. Score separately; never feed target-day results back into the report.
 python3 scripts/scorecard.py \
   --log <forecasts.jsonl> --index-daily <history_with_target.csv> \
   [--append <forecast_record.json>] --output <score_dir>
 ```
 
-The preflight writes `preflight_status`. Update the report header to that value
-before freezing. The final gate writes `final_gate_status`; it does not rewrite
-the frozen report. A failed final gate invalidates the snapshot.
+## LLM decision contract
 
-## Decision model
+Read `references/llm-judgement.md` and `references/contract.md` before writing
+`llm_judgement.json`.
 
-Read [references/evidence-rules.md](references/evidence-rules.md) before choosing
-weights or classifying a rebound. Read
-[references/premarket-foresight.md](references/premarket-foresight.md) before
-building a premarket execution posture without auction data.
-
-Use four close bins:
-
-| Canonical id | Chinese report label | Required meaning |
-|---|---|---|
-| `downside_continuation` | 向下延续 | Close remains below the downside defense |
-| `range_oscillation` | 区间震荡 | Close remains inside the active support-pressure decision band |
-| `upside_breakout` | 向上突破 | Close accepts the upside pressure defense |
-| `tail_extreme_down` | 尾部极值（向下） | Close is beyond the predeclared abnormal lower threshold |
-
-The Chinese labels are part of the report contract, not replacements for the
-canonical ids. Reports use `向下延续`, `区间震荡`, `向上突破` and
-`尾部极值（向下）`. The first must be bearish, the second range, the third
-bullish and the fourth bearish.
-
-Rules:
-
-- Close bins use `[lower, upper)`, except the final bin includes its upper bound.
-- Every bin includes `direction`, `weight`, `lower`, `upper`, a numeric close
-  condition and a complete `path_forecast`: opening assumption, at least two
-  ordered path steps, confirmation, targets and invalidation. The close condition
-  remains a pure close rule; the path describes how that close may be reached.
-- `downside_continuation.direction` is always `bearish` and displayed as `看空`.
-- `range_oscillation.direction` is always `neutral` and displayed as `震荡`.
-- `upside_breakout.direction` is always `bullish` and displayed as `看多`.
-- `tail_extreme_down.direction` is always `bearish` in the standard lower-tail bin.
-- Top-level `direction` therefore behaves as three visible states only:
-  `看多`, `看空`, `震荡`. Machine `neutral` is kept only for compatibility and
-  must be displayed as `震荡`.
-- Weight is an internal ranking score, not a probability. Do not call it a
-  calibrated probability and do not compute Brier scores from it.
-- `event_direction` is copied from the highest-weight bin's explicit direction.
-
-Before writing prose, populate `critical_evidence`:
+Required decision content:
 
 ```text
-core_thesis
-modal_scenario
-conditional_base_rates
-unmatched_rates_not_used
-critical_levels
-direction_audit
+structural_bias + structure_reason + structure_opposition + structure_invalidation
+window_state
+next_day_path:
+  baseline_summary
+  opening zone + reference level + expectation
+  intraday lower/upper + at least two ordered observations + acceptance/rejection
+  close lower/upper + location + character
+  upside_switch + downside_switch + tail_risk
+  structure_path_divergence when structure and close character conflict
+baseline_path_invalidation
+execution state/action + supporting/opposing evidence
+action_maintenance + action_invalidation + horizon + next_review
 ```
 
-Only a base rate whose state definition exactly matches the current state may be
-used. “Above prior day” and “above prior 20-day mean” are different states.
+`close.location` is `center`, `upper_edge`, `lower_edge`, `below_support` or
+`above_pressure`. `close.character` is `strong`, `weak` or `balanced`. These are
+path descriptors, not confidence scores.
 
 ## Report order
 
-Use the two-layer structure in [references/contract.md](references/contract.md).
-`report.md` is the concise decision brief; `audit.md` is the complete evidence
-appendix. Do not generate a second long narrative in the appendix.
+`report.md` is the concise decision brief; `audit.md` is the evidence appendix.
 
-The brief has five parts:
+1. Chinese metadata and decision card: structure, window, next-day baseline,
+   opening zone, intraday zone, close zone/character and execution state.
+2. Core judgement: structure rationale, strongest opposing evidence and explicit
+   structure/path divergence when applicable.
+3. Compact decision-evidence table with material gaps.
+4. Baseline opening → intraday → close path, upside/downside switches and tail
+   risk. Every displayed level must be in the current anchor registry.
+5. Script-generated execution risk facts, then the LLM's complete action rationale.
 
-1. Chinese report-information table and one Chinese decision-card table.
-2. Core judgment with the strongest supporting and opposing evidence.
-3. One compact decision-evidence table, including material gaps.
-4. Critical levels and one four-scenario table with complete ordered paths,
-   close bins, targets and invalidation for every scenario. All prices,
-   percentages, dates and durations in this table must use Arabic numerals.
-5. One compact Chinese execution-overlay table (three states, risk state,
-   action bias, defensive trigger, offensive trigger, overlay invalidation and
-   an “操作建议理由” subsection containing separate maintenance and release
-   conditions) and at most three confirmation or invalidation observations.
-
-Never repeat the decision card, target list, cutoff disclaimer or level
-rationale. Move completed wave history, the full level ladder, raw leadership
-fields and review attribution to `audit.md`. Preserve orphan-level disclosure
-in the brief when required by the gate. Link the appendix from the brief.
+The four weight-free close bins belong in the audit settlement table. Do not
+restore a weighted four-scenario table or an event-day headline such as
+“方向：震荡”. A wide-range lower-edge close is weak, not a high-quality balanced
+range hit.
 
 ## Gate and degradation
 
-Hard failures:
+Hard failures include future/unverifiable timestamps, target-day daily data in a
+premarket pack, inconsistent report/pack/forecast states, weights or confidence
+in the new judgement, unregistered path prices, incomplete path stages, missing
+structure/path invalidation, invalid close bins, missing level gates, manifest
+hash mismatch and ruleset mismatch.
 
-- observation later than cutoff;
-- unavailable or unverifiable timestamps;
-- target-day close or full-session data in a premarket pack;
-- inconsistent report/pack/forecast states;
-- invalid or overlapping close bins;
-- missing or future-dated break/reclaim memory or scenario weighting;
-- missing level-registry gate or undisclosed orphan levels;
-- manifest hash mismatch;
-- rule/schema version mismatch;
-- English words in the human-facing report or audit narrative (paths and
-  required security identifiers excepted).
+Missing external or optional evidence may degrade only when registered and not
+used as decisive evidence. Never silently convert missing data to neutral.
 
-Allowed degraded passes:
+## Scoring
 
-- an external layer is missing but explicitly `uninformative`, documented in
-  `data_gap_register`, and excluded from weights;
-- a market is not yet open at cutoff and is registered as `not_yet_open`;
-- path/event layers are weak or unavailable and do not anchor the modal branch.
+New path records settle opening-zone hit/distance, intraday range coverage and
+overshoot, close-zone hit/distance, close location, close character and fragile
+wide-range coverage. Daily OHLC cannot establish the order of intraday nodes;
+mark path order unavailable unless actual intraday evidence exists. Execution
+results remain separate.
 
-Do not use `unknown` as a substitute for `missing`, `provider_error`,
-`not_yet_open`, `closed`, or `stale`.
+Legacy weighted forecasts remain readable under their old scoring branch. Never
+mix legacy weighted accuracy with new path metrics and never rewrite frozen
+records.
 
 ## Output
-
-All human-readable output is Chinese-only. Before writing any report, read
-[references/report-language-zh.md](references/report-language-zh.md). Translate
-market names, indicators, directions, field labels and execution states into
-Chinese. The report header, decision card and execution overlay must use the
-Chinese display tables defined there. The gate canonicalizes those displays
-internally; JSON/CSV and gate/scorecard records continue to use stable English
-enum values.
 
 Persist by stage:
 
@@ -366,22 +262,15 @@ outputs/window_direction_YYYYMMDD/
 └── backfill/
 ```
 
-Historical replay always goes under `backfill/`. Never overwrite a frozen stage.
-
 ## References
 
-- [references/workflow.md](references/workflow.md): detailed operating flow,
-  cutoff rules and failure recovery.
-- [references/contract.md](references/contract.md): pack, scenario, report and
-  artifact schemas.
-- [references/execution-overlay.md](references/execution-overlay.md): optional
-  09:25 snapshot schema, independent states, risk derivation and execution scoring.
-- [references/premarket-foresight.md](references/premarket-foresight.md):
-  auction-independent premarket risk prior, confluence score and asymmetric
-  reduce/acceptance rules.
-- [references/evidence-rules.md](references/evidence-rules.md): external
-  mapping, levels, leadership, volume, state and scoring rules.
-- [references/rule-ledger.md](references/rule-ledger.md): historical rule
-  changes and replay evidence.
-- [references/llm-judgement.md](references/llm-judgement.md): final LLM
-  judgement schema, evidence references and code-validation boundary.
+- `references/workflow.md`: operating sequence and data cutoffs.
+- `references/contract.md`: pack, judgement, path, forecast and report schemas.
+- `references/llm-judgement.md`: discretionary judgement boundary.
+- `references/evidence-rules.md`: independent states and evidence rules.
+- `references/report-language-zh.md`: Chinese display contract.
+- `references/execution-overlay.md`: point-in-time execution fact layer.
+- `references/premarket-foresight.md`: auction-independent premarket risk facts.
+- `references/rule-ledger.md`: rule changes and replay evidence.
+
+Current ruleset: `2026-10-28.4`.

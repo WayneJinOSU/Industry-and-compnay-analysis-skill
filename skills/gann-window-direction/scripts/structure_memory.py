@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from common import RULESET_VERSION, atomic_write_json, parse_date
+from common import RULESET_VERSION, atomic_write_json, parse_date, wilder_atr_14
 
 
 SUPPORT_ROLES = ("support", "support_defense", "downside_confirmation", "支撑")
@@ -26,17 +26,7 @@ def role_matches(role: str, family: tuple[str, ...]) -> bool:
 
 
 def atr14(frame: pd.DataFrame) -> float | None:
-    previous_close = frame["close"].shift(1)
-    true_range = pd.concat(
-        [
-            frame["high"] - frame["low"],
-            (frame["high"] - previous_close).abs(),
-            (frame["low"] - previous_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    value = true_range.tail(14).mean()
-    return None if pd.isna(value) else float(value)
+    return wilder_atr_14(frame)
 
 
 def main() -> int:
@@ -382,6 +372,7 @@ def main() -> int:
         "data_quality": "complete" if not gaps else "partial",
         "close": close,
         "atr14": atr,
+        "atr_method": "wilder_14",
         "close_position": close_position,
         "ma5": ma5,
         "nearest_support": nearest_support,

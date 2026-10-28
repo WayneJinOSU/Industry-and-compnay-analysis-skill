@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and attach the LLM's final structured judgement."""
+"""Validate and attach discretionary LLM structure and next-day path judgement."""
 
 from __future__ import annotations
 
@@ -7,30 +7,14 @@ import argparse
 import json
 from pathlib import Path
 
-from common import (
-    RULESET_VERSION,
-    atomic_write_json,
-    parse_cutoff,
-    validate_scenarios,
-)
+from common import RULESET_VERSION, atomic_write_json, parse_cutoff
+from path_contract import forbidden_keys, validate_next_day_path
 
 
-DIRECTIONS = ("bullish", "bearish", "neutral", "range")
 STRUCTURAL_STATES = ("bullish", "bearish", "neutral")
 EXECUTION_STATES = ("observe", "wait_for_confirmation", "confirmed", "reduce_only", "abstain")
 ACTIONS = ("observe", "add_only_after_confirmation", "hold", "reduce_only", "no_new_long", "stop")
 RISK_STATES = ("normal", "watch", "preemptive_defensive", "defensive", "offensive", "unknown")
-SCENARIOS = {
-    "downside_continuation": "bearish",
-    "range_oscillation": "neutral",
-    "upside_breakout": "bullish",
-    "tail_extreme_down": "bearish",
-}
-
-
-def canonical_direction(value: object) -> str:
-    text = str(value or "").strip().lower()
-    return "neutral" if text == "range" else text
 
 
 def nonempty_list(value: object, minimum: int) -> bool:
@@ -53,7 +37,7 @@ def reference_exists(pack: dict, reference: object) -> bool:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="校验并附加大模型最终研判")
+    parser = argparse.ArgumentParser(description="校验并附加大模型结构与路径研判")
     parser.add_argument("--pack", required=True)
     parser.add_argument("--judgement", required=True)
     parser.add_argument("--pack-output", required=True)
@@ -68,15 +52,16 @@ def main() -> int:
         "decision_at",
         "core_thesis",
         "structural_bias",
+        "structure_reason",
+        "structure_opposition",
+        "structure_invalidation",
         "window_state",
-        "direction",
-        "scenarios",
-        "targets",
+        "next_day_path",
+        "baseline_path_invalidation",
         "execution_state",
         "execution_action",
         "risk_state",
         "abstain",
-        "confidence",
         "supporting_evidence",
         "opposing_evidence",
         "action_maintenance",
@@ -90,6 +75,9 @@ def main() -> int:
         for field in required
         if field not in judgement or judgement.get(field) in (None, "", [], {})
     )
+    forbidden = forbidden_keys(judgement)
+    if forbidden:
+        errors.append(f"新版研判禁止权重、置信度和顶层方向字段：{forbidden}")
     if judgement.get("source") != "llm":
         errors.append("source 必须明确为 llm")
     if str(judgement.get("target_date")) != str(pack.get("target_date")):
@@ -112,9 +100,6 @@ def main() -> int:
         "failed_bearish_window",
     ):
         errors.append("window_state 非法")
-    direction = canonical_direction(judgement.get("direction"))
-    if direction not in ("bullish", "bearish", "neutral"):
-        errors.append("direction 必须是看多、看空或震荡")
     if judgement.get("execution_state") not in EXECUTION_STATES:
         errors.append("execution_state 非法")
     if judgement.get("execution_action") not in ACTIONS:
@@ -124,51 +109,31 @@ def main() -> int:
     if not isinstance(judgement.get("abstain"), bool):
         errors.append("abstain 必须为布尔值")
 
-    scenarios = judgement.get("scenarios")
-    if not isinstance(scenarios, list):
-        errors.append("scenarios 必须是列表")
-        scenarios = []
-    errors.extend(validate_scenarios(scenarios))
-    for scenario in scenarios:
-        if not isinstance(scenario, dict):
-            continue
-        for field in ("name", "weight", "lower", "upper", "close_condition", "path_forecast"):
-            if scenario.get(field) is None:
-                errors.append(f"情景缺少字段：{scenario.get('name', '未命名')}.{field}")
-        path = scenario.get("path_forecast") or {}
-        for field in ("opening", "confirmation", "invalidation"):
-            if not str(path.get(field) or "").strip():
-                errors.append(f"情景路径缺少 {field}")
-        if not nonempty_list(path.get("steps"), 2):
-            errors.append("情景路径至少需要2个有序步骤")
-        if not path.get("targets"):
-            errors.append("情景路径必须包含目标")
-    if not isinstance(judgement.get("targets"), list) or not judgement.get("targets"):
-        errors.append("targets 必须是非空列表")
-
-    if not nonempty_list(judgement.get("supporting_evidence"), 2):
-        errors.append("supporting_evidence 至少需要2条")
-    if not nonempty_list(judgement.get("opposing_evidence"), 1):
-        errors.append("opposing_evidence 至少需要1条")
-    if not nonempty_list(judgement.get("action_maintenance"), 1):
-        errors.append("action_maintenance 至少需要1条")
-    if not nonempty_list(judgement.get("action_invalidation"), 1):
-        errors.append("action_invalidation 至少需要1条")
-    if not nonempty_list(judgement.get("evidence_refs"), 1):
-        errors.append("evidence_refs 至少需要1条")
-    elif not all(reference_exists(pack, ref) for ref in judgement["evidence_refs"]):
+    level_context = pack.get("level_context") or {}
+    errors.extend(
+        validate_next_day_path(
+            judgement.get("next_day_path"),
+            str(judgement.get("structural_bias")),
+            level_context,
+        )
+    )
+    for field, minimum in (
+        ("structure_reason", 2),
+        ("structure_opposition", 1),
+        ("structure_invalidation", 1),
+        ("baseline_path_invalidation", 1),
+        ("supporting_evidence", 2),
+        ("opposing_evidence", 1),
+        ("action_maintenance", 1),
+        ("action_invalidation", 1),
+        ("evidence_refs", 1),
+    ):
+        if not nonempty_list(judgement.get(field), minimum):
+            errors.append(f"{field} 至少需要{minimum}条")
+    if nonempty_list(judgement.get("evidence_refs"), 1) and not all(
+        reference_exists(pack, ref) for ref in judgement["evidence_refs"]
+    ):
         errors.append("evidence_refs 包含输入包中不存在的证据路径")
-
-    top_scenario = None
-    second_scenario = None
-    margin = None
-    if scenarios and not validate_scenarios(scenarios):
-        ordered = sorted(scenarios, key=lambda item: float(item["weight"]), reverse=True)
-        top_scenario = ordered[0]["name"]
-        second_scenario = ordered[1]["name"]
-        margin = round(float(ordered[0]["weight"]) - float(ordered[1]["weight"]), 4)
-        if direction != SCENARIOS[top_scenario]:
-            errors.append("direction 必须等于最高权重情景的固定方向")
 
     if errors:
         print(json.dumps({"status": "failed", "errors": errors}, ensure_ascii=False, indent=2))
@@ -180,15 +145,7 @@ def main() -> int:
             "ruleset_version": RULESET_VERSION,
             "source": "llm",
             "available_at": judgement["decision_at"],
-            "data_quality": "llm_structured_judgement",
-            "direction": direction,
-            "top_scenario": top_scenario,
-            "second_scenario": second_scenario,
-            "scenario_weights": {
-                row["name"]: float(row["weight"]) for row in scenarios
-            },
-            "confidence_margin": margin,
-            "low_confidence": bool(margin is not None and margin < 0.05),
+            "data_quality": "llm_structured_path_judgement",
         }
     )
     pack["ruleset_version"] = RULESET_VERSION
@@ -198,10 +155,8 @@ def main() -> int:
         json.dumps(
             {
                 "status": "passed",
-                "direction": direction,
-                "top_scenario": top_scenario,
-                "confidence_margin": margin,
-                "low_confidence": payload["low_confidence"],
+                "structural_bias": payload["structural_bias"],
+                "next_day_baseline": payload["next_day_path"]["baseline_summary"],
             },
             ensure_ascii=False,
             indent=2,

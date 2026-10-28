@@ -2,8 +2,9 @@
 """状态量输入：计算点时状态和逐层信息量。
 
 为什么必须存在：
-情景区间依赖 weekly_regime / funding_state / breadth_state，报告还需逐层判定
-information_content。本脚本同时执行 as-of 截断，避免输入文件含未来行时污染状态。
+综合裁量使用 weekly_regime / funding_state / breadth_state 等客观状态，报告还需逐层判定
+information_content。本脚本同时执行 as-of 截断，避免输入文件含未来行时污染状态；
+它不生成次日路径、情景权重或方向结论。
 
 本脚本只做确定性计算，不做方向判断；输出 JSON 供报告引用，并生成门禁要求的
 `data_gap_register`（含每条字段的兜底尝试与状态，禁止静默丢弃）。
@@ -159,7 +160,6 @@ def main() -> int:
     parser.add_argument("--external", help="direction_input_pack.json 绝对路径（读取 external_market）")
     parser.add_argument("--leaders", help="龙头状态 csv（可选，缺失时该层登记缺口）")
     parser.add_argument("--leadership-json", help="leadership_state.py 输出的完整 JSON")
-    parser.add_argument("--extreme-stats", help="extreme_state_stats.py 输出的完整 JSON")
     parser.add_argument("--nearest-resistance", type=float, help="最近压力位（判定量能压缩所在侧）")
     parser.add_argument("--nearest-support", type=float, help="最近支撑位（判定量能压缩所在侧）")
     parser.add_argument("--asof", required=True, help="数据截点 YYYY-MM-DD")
@@ -199,11 +199,6 @@ def main() -> int:
     leadership_payload = (
         json.loads(Path(args.leadership_json).read_text(encoding="utf-8"))
         if args.leadership_json
-        else None
-    )
-    extreme_payload = (
-        json.loads(Path(args.extreme_stats).read_text(encoding="utf-8"))
-        if args.extreme_stats
         else None
     )
     gap: list[dict] = []
@@ -309,50 +304,12 @@ def main() -> int:
     }
     informative_layers = [k for k, v in information_content.items() if v == "informative"]
 
-    if regime == "down" and funding == "deleveraging" and breadth == "deteriorating":
-        prior = {"downside_continuation": ">=35%", "range_oscillation": "20-35%", "upside_breakout": "15-30%", "tail_extreme_down": "<=10%"}
-        cap_note = "weekly=down 且 funding=deleveraging 且 breadth=deteriorating：不得把回到中枢作为基准"
-    elif regime == "down":
-        prior = {"downside_continuation": "30-45%", "range_oscillation": ">=30%", "upside_breakout": "15-25%", "tail_extreme_down": "<=10%"}
-        cap_note = "weekly=down 且资金/宽度不同向：downside_continuation 30-45%，range_oscillation 至少30%"
-    elif regime == "up" and funding == "accumulating" and breadth == "improving":
-        prior = {"downside_continuation": ">=35%（向上）", "range_oscillation": "20-35%", "upside_breakout": "15-30%", "tail_extreme_down": "<=10%"}
-        cap_note = "镜像处理，突破方向优先"
-    else:
-        prior = {"downside_continuation": "<=40%", "range_oscillation": "<=40%", "upside_breakout": "—", "tail_extreme_down": "<=10%"}
-        cap_note = "range 或跨层 mixed：权重由后续综合研判确定，只要求合计归一化"
-
     extreme_flags = {
         "breadth_extreme_low": extreme_low,
         "breadth_extreme_high": extreme_high,
         "funding_deleveraging_spike": funding_spike,
         "any_extreme": bool(extreme_low or extreme_high or funding_spike),
     }
-    if extreme_flags["any_extreme"]:
-        cap_note += "；存在极值状态时，按当前匹配状态的同口径条件分布确定反向分支下限"
-    if volume_compression:
-        cap_note += (
-            "；量能压缩成立：upside_breakout 下限 25%，"
-            "无宽度/等权修复确认时不得把“回到中枢”作为基准"
-        )
-        if prior.get("upside_breakout", "").startswith(("15-25", "15-30")):
-            prior["upside_breakout"] = "25-30%"
-
-    floors_by_state = {}
-    reversal_floor = 0.25
-    if extreme_payload:
-        state_floor_map = extreme_payload.get("recommended_reversal_floor_by_state") or {}
-        regime_key = "downtrend" if regime == "down" else "all"
-        active_states = []
-        if extreme_low:
-            active_states.append("breadth_extreme_low")
-        if funding_spike:
-            active_states.append("funding_spike")
-        for state_name in active_states:
-            floor = ((state_floor_map.get(state_name) or {}).get(regime_key))
-            if floor is not None:
-                floors_by_state[state_name] = float(floor)
-                reversal_floor = max(reversal_floor, float(floor))
 
     available_at = resolve_available_at(
         effective_asof,
@@ -379,13 +336,9 @@ def main() -> int:
         "information_content": information_content,
         "informative_layers": informative_layers,
         "extreme_flags": extreme_flags,
-        "reversal_floor": reversal_floor,
-        "reversal_floor_by_state": floors_by_state,
         "volume_compression": volume_compression,
         "compression_side": compression_side,
         "volume_zscore_20d": round(volume_z_series, 3),
-        "weight_prior": prior,
-        "weight_cap_note": cap_note,
         "details": {
             "weekly_regime": regime_detail,
             "funding": funding_detail,
@@ -398,7 +351,7 @@ def main() -> int:
             "leadership": leadership_detail,
         },
         "data_gap_register": gap,
-        "note": "本文件只提供输入量，不产生方向结论；基准情景由信息量最高的内部层决定",
+        "note": "本文件只提供点时事实，不产生方向、权重或概率结论",
     }
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -426,7 +379,7 @@ def main() -> int:
         atomic_write_json(Path(args.pack_output), enriched)
     print(json.dumps({k: result[k] for k in ("asof", "weekly_regime", "funding_state", "breadth_state",
                                              "information_content", "extreme_flags", "volume_compression",
-                                             "compression_side", "volume_zscore_20d", "weight_prior", "weight_cap_note")},
+                                             "compression_side", "volume_zscore_20d")},
                      ensure_ascii=False, indent=2))
     print(f"\ndata_gap_register: {len(gap)} 条")
     return 0

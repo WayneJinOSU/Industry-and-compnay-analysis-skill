@@ -31,7 +31,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from common import RULESET_VERSION, atomic_write_json, filter_asof, parse_date, resolve_available_at
+from common import (
+    RULESET_VERSION,
+    atomic_write_json,
+    filter_asof,
+    parse_date,
+    resolve_available_at,
+    wilder_atr_14,
+)
 
 TOUCH_TOL = 0.003
 CLUSTER_TOL = 0.0025
@@ -606,15 +613,10 @@ def main() -> int:
     close = float(daily["close"].iloc[-1])
     as_of = daily["date"].iloc[-1]
     history = daily.tail(DEFAULT_HISTORY).reset_index(drop=True)
-    tr = pd.concat(
-        [
-            history["high"] - history["low"],
-            (history["high"] - history["close"].shift()).abs(),
-            (history["low"] - history["close"].shift()).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    atr = float(tr.ewm(alpha=1 / 14, adjust=False).mean().iloc[-1])
+    atr_value = wilder_atr_14(daily)
+    if atr_value is None or atr_value <= 0:
+        raise SystemExit("无法计算统一 Wilder 14 日平均真实波幅")
+    atr = float(atr_value)
 
     candidates, checks, gaps = collect_candidates(
         daily,
@@ -654,17 +656,7 @@ def main() -> int:
         "未触碰",
         np.where(table["hold_rate"] >= 0.8, "守得住", np.where(table["hold_rate"] <= 0.45, "反复被破", "混合")),
     )
-    table["score"] = (
-        table["lens_count"].clip(upper=4) * 1.2
-        + table["touches"].clip(upper=5) * 0.5
-        + table["reaction_median"].fillna(0).clip(0, 0.05) / 0.01 * 0.8
-        + table["hold_rate"].fillna(0) * 1.2
-    ).round(2)
-    near = table["distance_atr"].abs() <= 1.5
-    within_two = table["distance_atr"].abs() <= 2.0
-    table["tier"] = "C"
-    table.loc[near & (table["score"] >= 3.5), "tier"] = "B"
-    table.loc[within_two & (table["score"] >= 5.5) & ((table["lens_count"] >= 3) | (table["touches"] >= 4)), "tier"] = "A"
+    # Keep raw evidence only. The LLM weighs levels; this script does not score or rank them.
     table["unverified"] = (table["touches"] == 0) | (table["lens_count"] <= 1)
     table = table.sort_values(["kind", "level"]).reset_index(drop=True)
 
@@ -860,7 +852,6 @@ def main() -> int:
 
     ladder = table[table["distance_atr"].abs() <= 2.2][
         [
-            "tier",
             "character",
             "kind",
             "level",
@@ -873,7 +864,7 @@ def main() -> int:
             "lenses",
             "touches",
             "hold_rate",
-            "score",
+            "reaction_median",
             "distance_atr",
             "unverified",
             "formation_window",
@@ -899,6 +890,7 @@ def main() -> int:
         "target_date": target.strftime("%Y-%m-%d"),
         "close": close,
         "atr14": round(atr, 2),
+        "atr_method": "wilder_14",
         "data_source": daily.attrs.get("source"),
         "source": daily.attrs.get("source"),
         "data_quality": "complete" if not gaps else "partial",

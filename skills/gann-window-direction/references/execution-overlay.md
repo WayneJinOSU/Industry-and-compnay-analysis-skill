@@ -1,26 +1,37 @@
-# Execution overlay and 09:25 stage
+# Execution fact layer and 09:25 stage
 
 ## Boundary
 
-Keep four close bins and `path_forecast` unchanged. `execution_overlay` answers
-whether risk should be reduced, held for confirmation or restored; it never
-changes scenario weights and never rewrites a frozen prior decision.
+`execution_overlay` is a point-in-time fact layer. It describes what can be observed
+at the decision cutoff; it does not decide what the LLM should do. It never selects
+`structural_bias`, `window_state`, `next_day_path`, `risk_state` or an execution action.
 
-The default stage is `premarket` at 09:00 and must not depend on call auction or
-intraday data. In that mode the overlay uses the causal premarket setup described
-in [premarket-foresight.md](premarket-foresight.md). A 09:25 snapshot is optional
-and can only refine the premarket prior.
+The overlay must not contain:
 
-`preopen_0925` is an optional prospective stage stored in the existing
-`premarket/` artifact directory. A 09:25 run uses the final call-auction
-snapshot, not 09:30–10:00 data. Treat 09:15–09:20 indicative auction data as
-cancellable and weaker than the final 09:25 snapshot.
+```text
+setup_score / setup_state / risk_state / execution_bias
+action_rationale / defensive_trigger / offensive_trigger / conditional_path
+```
 
-Daily A-share features still end on T-1. Target-day auction, price, breadth,
-leadership and amount-speed fields must come from a separate snapshot with
-`data_asof`, `available_at`, `source` and `data_quality`.
+The LLM reads these facts together with the full evidence pack and independently
+submits the risk state, execution state, action, supporting and opposing evidence,
+maintenance conditions, invalidation, horizon and next review point.
 
-## Snapshot
+## Decision stages
+
+The default stage is `premarket` at 09:00 and does not depend on call-auction or
+intraday data. A 09:25 snapshot is optional additional evidence, not a machine rule
+for upgrading or downgrading an earlier action.
+
+A `preopen_0925` run uses the final call-auction snapshot, not 09:30–10:00 data.
+Treat 09:15–09:20 indicative auction data as cancellable and weaker than the final
+09:25 snapshot. Daily A-share features still end on T-1.
+
+Every target-day snapshot must include `data_asof`, `available_at`, `source` and
+`data_quality`. Missing fields remain missing; do not manufacture a complete
+participation observation from one field.
+
+## Snapshot example
 
 ```json
 {
@@ -40,10 +51,8 @@ leadership and amount-speed fields must come from a separate snapshot with
 
 `same_time_amount_ratio` compares the same auction or intraday interval with
 historical observations at that same time, never with a full-day median.
-Missing fields remain missing; do not manufacture a complete participation
-signal from one field.
 
-## Independent states
+## Observable states
 
 - `gap_state`: `expected | confirmed | faded | not_applicable | unknown`.
   A positive open gap must reach the declared threshold. `faded` requires the
@@ -56,110 +65,62 @@ signal from one field.
   advance ratio, leader relative strength and same-time amount ratio must be
   present, and at least two must point in the same direction.
 
-These dimensions may coexist. Do not replace them with one overlapping label
-such as `high_open_distribution`.
+These are descriptive states. `rejected + divergent` does not automatically mean
+`reduce_only`, and `accepted + confirming` does not automatically mean restore
+offense. The LLM must explain its own execution decision and strongest opposing
+observation.
 
-In `decision_mode=premarket_setup`, `pressure_state=untested` means the target
-day has not begun; it does not make the premarket risk prior neutral. The
-premarket setup state and evidence are reported separately.
+In `decision_mode=premarket_facts`, `pressure_state=untested` means the target day
+has not begun. It is not a neutral risk conclusion.
 
-The six setup checks use `external_extreme` instead of a one-sided positive
-catalyst. A downside shock is confirmed only when US semiconductor/Nasdaq
-weakness is paired with at least two of Japan, Korea, Taiwan and the China proxy
-falling at the cutoff. US weakness with insufficient Asia confirmation remains
-`unknown`. `recent_path_pressure` combines a fast three-day rebound with
-break-and-reclaim memory, so an unreclaimed support break can contribute to the
-premarket prior without fake-confirming a target-day close.
+## Premarket facts
 
-## Risk derivation
+The overlay retains five three-state evidence rows:
 
-- `preemptive_defensive`: a premarket or combined setup identifies a mature
-  time/price supply zone with a strong external catalyst and insufficient
-  confirmation. This authorizes `reduce_only` before an intraday rejection.
-- `defensive`: pressure rejected **and** participation divergent. A gap fade
-  alone never triggers defense.
-- `offensive`: pressure accepted **and** participation confirming.
-- `watch`: a gap or pressure test exists but the evidence is incomplete.
-- `unknown`: required observations are missing. Do not invent an action signal.
-- `normal`: no active gap/pressure risk and no missing required observation.
+```text
+active_key_window
+pressure_proximity
+external_extreme
+recent_path_pressure
+confirmation_deficit
+```
 
-When the premarket setup is `risk_zone_euphoria`, `normal`, `watch` and
-`unknown` snapshot states cannot clear the premarket defense. The combined
-state may move to `offensive` only after pressure acceptance plus confirming
-participation, or to `defensive` after rejection plus divergence.
+Each row is `met`, `not_met` or `unknown`, with a textual detail. There is no
+`structural_bearish` row: the overlay runs before LLM judgement and must not read
+or inherit a pre-existing `direction_audit.structural_bias` as a decision input.
 
-The execution bias is `reduce_only` for confirmed or preemptive defense,
-`add_only_after_confirmation` for offense, `wait_for_confirmation` for
-watch/unknown and `observe` for normal. This is a research risk overlay, not a
-personalized portfolio instruction.
-
-This mapping is a code reference. The final execution state and action belong to
-the validated LLM judgement. A deviation must state which point-in-time evidence
-overrode the reference and must still include maintenance, invalidation, horizon
-and review conditions.
+The five rows are not added into a score and do not map to a risk or action state.
+See [premarket-foresight.md](premarket-foresight.md) for their factual definitions.
 
 ## Required output
 
 Every overlay contains:
 
 ```text
-stage, target_date, data_asof, available_at, source, data_quality
-gap_state, pressure_state, participation_state, risk_state, execution_bias
-decision_mode, setup_state, setup_evidence, metrics, thresholds,
-action_rationale, defensive_trigger, offensive_trigger, invalidation
-conditional_path, valid_for, next_review, data_gaps
+ruleset_version, stage, target_date, data_asof, available_at
+source, data_quality, decision_mode
+setup_evidence, gap_state, pressure_state, participation_state
+metrics, thresholds, invalidation, valid_for, next_review, data_gaps
 ```
 
-Every action recommendation must include `action_rationale` with:
+`invalidation` describes only when the fact coverage is unusable, such as a snapshot
+later than `forecast_cutoff` or unverifiable timestamps. It is not an action
+invalidation; the latter belongs to `llm_judgement`.
 
-```text
-recommendation, recommendation_zh
-why_now[at least 2]
-opposing_evidence[at least 1]
-action_maintenance[at least 1]
-action_invalidation[at least 1]
-horizon, next_review
-```
+## Report and gate
 
-The user-facing report must contain a Chinese execution-overlay table and an
-“操作建议理由” subsection. The table must explicitly include `防守触发`,
-`恢复进攻触发` and `覆盖失效`; the rationale must explicitly include
-`动作维持条件` and `动作解除条件`. Display `premarket_setup` as `盘前设定`,
-`risk_zone_euphoria` as `风险区亢奋`, `preemptive_defensive` as `提前防守`,
-and `reduce_only` as `只减不加`; do not expose the raw machine value block.
-`action_maintenance` states why the current action remains valid.
-`action_invalidation` contains only evidence that releases or overturns the
-current action. The same condition must not be used for both.
+The report separates:
 
-Each premarket setup check uses `met`, `not_met` or `unknown`. Unknown checks
-are excluded from the score; at least four known checks are required before a
-setup state can be classified.
+1. **执行风险事实**：the script-generated states, metrics and data gaps.
+2. **执行裁量**：the LLM's risk state, action, reasons, strongest opposing evidence,
+   maintenance and release conditions, horizon and next review.
 
-`conditional_path` covers the target day, T+1 defense persistence and the
-T+1/T+3 condition for restoring offense. Score close-bin outcome, ordered path
-nodes and execution outcome separately. Execution evaluation must include both
-avoided drawdown and missed upside, false positives and a simple no-action
-baseline; do not optimize only for earlier defensive signals.
+Default support and pressure defenses come from `level_context.decision_band`.
+All thresholds must be registered anchors; support and the pressure defense must
+match that band, with `support < pressure_low <= pressure_high`. Manual overrides
+cannot introduce a second, inconsistent level set.
 
-## Command
-
-```bash
-# Default 09:00 premarket decision: no auction or intraday snapshot
-python3 scripts/execution_overlay.py \
-  --pack pack.final.json \
-  --pressure-low 3690.95 --pressure-high 3700.82 --support 3606.94 \
-  --pack-output pack.with_overlay.json --output execution_overlay.json
-
-# Optional later refinement after a 09:25 or intraday snapshot
-python3 scripts/execution_overlay.py \
-  --pack pack.with_overlay.json --snapshot auction_0925.json \
-  --pressure-low 3690.95 --pressure-high 3700.82 --support 3606.94 \
-  --pack-output pack.with_snapshot_overlay.json \
-  --output execution_overlay_with_snapshot.json
-```
-
-Copy the same overlay object into `forecast_record.json`. The gate checks enum
-values, required triggers, risk/action consistency, stage and timestamps. At the
-normal 09:00 `premarket` stage, omit `--snapshot`; the overlay must instead derive
-`premarket_setup` from the pack. Missing optional data is recorded, but it does
-not erase a valid causal premarket risk prior.
+The gate rejects decision fields inside the overlay and does not rederive an
+expected risk state or action. It continues to validate timestamps, evidence-row
+structure, threshold geometry, pack/forecast equality and the LLM's complete
+execution rationale.

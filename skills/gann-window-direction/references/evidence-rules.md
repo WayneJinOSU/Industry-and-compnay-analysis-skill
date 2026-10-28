@@ -11,10 +11,10 @@ window_state: unresolved | bullish_confirmation | bearish_confirmation |
 execution_state: observe | wait_for_confirmation | confirmed | reduce_only | abstain
 ```
 
-`direction` is a separate event-level output. It is the modal close-bin
-direction. It is not copied from `structural_bias`. Machine `neutral` means the
-visible direction `震荡`; the report must never display `中性` as a fourth
-direction.
+`next_day_path` is independent of `structural_bias`. The LLM chooses a baseline
+opening → intraday → close path from current anchors. A strong close inside a
+bearish structure is a divergence to explain, not an automatic structural
+reversal. There is no top-level event-day direction.
 
 ## Information content
 
@@ -38,7 +38,7 @@ weak
 uninformative
 ```
 
-`uninformative` never means neutral and cannot anchor the modal branch. Missing
+`uninformative` never means neutral and cannot anchor the baseline path. Missing
 data is registered and excluded.
 
 ## External mapping
@@ -119,8 +119,8 @@ recent_path_pressure: met | not_met | unknown
 ```
 
 `recent_path_pressure=met` includes either an unreclaimed support break or a
-weak close near support. This is evidence for execution risk and a bounded
-scenario-weight adjustment, not a standalone short signal.
+weak close near support. This is evidence for execution risk and LLM path
+judgement, not a standalone short signal or an automatic path switch.
 
 Also keep `pressure_attempt_memory` for each pressure band. A completed daily bar
 tests the band when its high reaches the pressure anchor. The test is a failed
@@ -128,9 +128,8 @@ breakout when the close remains below the pressure defense, and an accepted
 breakout only when the close reaches the defense. Record the 10-session test
 count, failed and accepted close counts, consecutive failed tests, last test
 date and status, sessions since the last test, whether failed highs are
-descending, and test amount relative to the 10-day baseline. A wide range
-decision band receives a bounded range-weight penalty; width alone cannot count
-as evidence of a stable range.
+descending, and test amount relative to the 10-day baseline. Decision-band width
+must be disclosed; width alone cannot count as evidence of a stable range.
 
 ## Volume and margin
 
@@ -205,30 +204,21 @@ breadth_extreme_high
 funding_deleveraging_spike
 ```
 
-The default mean-reversion floor is 25%. A state-specific floor of 35% is allowed
-only if:
+Conditional extreme statistics are evidence, not automatic mean-reversion rules.
+Report sample size, baseline, horizon and significance where available. Do not
+aggregate one state's result into another state or into a general “market
+bottom” rule. Legacy reversal-floor fields never enter the new path contract.
+
+## Close-bin boundaries
+
+All four bins are close-price bins for settlement only. They are not the full
+intraday path and do not generate a top-level event-day direction:
 
 ```text
-sample >= 30
-T+1 excess over baseline >= 5pp
-p < 0.05
-```
-
-The floor belongs to the matching state. Never aggregate one state’s 35% into
-another state or into a general “market bottom” rule.
-
-## Scenario boundaries
-
-All four bins are close-price bins for settlement. They are not the same as the
-full intraday path.
-
-The report labels encode direction unambiguously:
-
-```text
-向下延续 = 看空
-区间震荡 = 震荡
-向上突破 = 看多
-尾部极值（向下） = 看空
+向下延续
+区间震荡
+向上突破
+尾部极值（向下）
 ```
 
 Recommended construction:
@@ -248,42 +238,17 @@ final values come from the current level registry and must be auditable.
 An intraday level can be an alert without becoming a close-bin boundary. State
 this explicitly in the report.
 
-## Weights
+## Discretionary path evidence
 
-Weights rank scenarios. They are not calibrated probabilities.
+The LLM reviews weekly regime, funding, breadth, information content, matched
+base rates, extreme states, pressure attempts, break/reclaim memory, current
+anchors and window evidence together. Code does not convert these inputs into
+scenario weights, calibrated probabilities or a direction ranking.
 
-Use state variables:
-
-```text
-weekly_regime
-funding_state
-breadth_state
-information_content
-matched base rates
-extreme state
-```
-
-Do not increase a scenario weight because a nearby support has a high historical
-hold rate. Levels do not count as independent evidence dimensions.
-
-### Baseline weights and LLM final weighting
-
-Code starts from a baseline based on weekly regime, funding and breadth. Apply
-structural adjustments with a total cap of ±12 percentage points per scenario
-to produce a reference:
-
-- unreclaimed support break: raise downward continuation, lower key-level test;
-- support reclaimed: reverse that adjustment;
-- weak close near support: modestly raise downward continuation;
-- close in the middle of the decision band: modestly raise key-level test;
-- confirmed time window: modest contextual adjustment to key-level test.
-
-Normalize to 100% and record every adjustment and its reason. This baseline is
-not the final decision. The LLM must review all
-evidence, set the final four weights, direction and execution action, and cite
-the evidence used. Any material deviation from the baseline must be explained.
-The final top two weights use the same 5 percentage-point low-confidence
-threshold.
+A nearby support's historical hold rate is not an independent reason to select a
+range path. The baseline must state opening, ordered intraday observations and
+close zones, then specify the evidence that switches it upward or downward. A
+wide-range lower-edge close is weak, not a high-quality balanced-range result.
 
 ## Window confirmation
 

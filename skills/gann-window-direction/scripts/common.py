@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-RULESET_VERSION = "2026-10-25.12"
+RULESET_VERSION = "2026-10-28.4"
 TZ = ZoneInfo("Asia/Shanghai")
 
 LAYERS = ("external", "volume", "margin", "breadth", "leadership", "path", "event")
@@ -44,22 +44,23 @@ REPORT_FIELD_LABELS_ZH = {
     "gate_status": ("门禁状态",),
     "structural_bias": ("结构偏向", "结构状态"),
     "window_state": ("窗口状态", "江恩窗口状态"),
-    "direction": ("事件日方向", "收盘方向"),
+    "next_day_baseline": ("次日基准",),
+    "opening_zone": ("开盘点位", "开盘区域"),
+    "intraday_zone": ("盘中波动点位", "盘中波动区"),
+    "close_zone": ("收盘点位", "收盘区域"),
+    "close_character": ("收盘性质",),
     "execution_state": ("执行状态",),
     "action_bias": ("操作偏向", "操作建议"),
     "abstain": ("是否弃权", "弃权"),
-    "confidence": ("置信度",),
     "decision_level": ("决策区间",),
-    "invalidation": ("失效条件",),
+    "structure_invalidation": ("结构失效条件",),
+    "baseline_path_invalidation": ("基准路径失效",),
     "next_confirmation": ("下一确认", "下次确认"),
     "decision_mode": ("决策模式",),
-    "setup_state": ("盘前设定状态", "环境状态"),
-    "setup_score": ("盘前检查得分", "检查得分"),
     "gap_state": ("缺口状态",),
     "pressure_state": ("压力状态",),
     "participation_state": ("参与度状态",),
     "risk_state": ("风险状态",),
-    "execution_bias": ("执行偏向", "执行建议"),
 }
 REPORT_VALUE_LABELS_ZH = {
     "prediction_type": {
@@ -80,11 +81,6 @@ REPORT_VALUE_LABELS_ZH = {
         "failed": ("未通过", "失败"),
     },
     "structural_bias": {
-        "bullish": ("偏多", "看多"),
-        "bearish": ("偏空", "看空"),
-        "neutral": ("震荡", "中性"),
-    },
-    "direction": {
         "bullish": ("偏多", "看多"),
         "bearish": ("偏空", "看空"),
         "neutral": ("震荡", "中性"),
@@ -119,12 +115,6 @@ REPORT_VALUE_LABELS_ZH = {
         "premarket_setup": ("盘前设定",),
         "combined": ("盘前设定与快照合并", "合并判断"),
     },
-    "setup_state": {
-        "risk_zone_euphoria": ("风险区亢奋",),
-        "conditional_watch": ("条件观察",),
-        "normal": ("正常",),
-        "unknown": ("未知",),
-    },
     "gap_state": {
         "expected": ("预期缺口",),
         "confirmed": ("缺口确认",),
@@ -152,12 +142,6 @@ REPORT_VALUE_LABELS_ZH = {
         "defensive": ("防守",),
         "offensive": ("进攻",),
         "unknown": ("未知",),
-    },
-    "execution_bias": {
-        "observe": ("观察",),
-        "wait_for_confirmation": ("等待确认",),
-        "reduce_only": ("只减不加",),
-        "add_only_after_confirmation": ("确认后恢复进攻", "确认后加仓"),
     },
 }
 STAGE_PREDICTION = {
@@ -345,43 +329,64 @@ def breadth_state(market: pd.DataFrame) -> tuple[str, dict, bool, bool]:
     }, extreme_low, extreme_high
 
 
-def validate_scenarios(scenarios: list[dict], interval_convention: str = "lower_inclusive_upper_exclusive") -> list[str]:
+def wilder_atr_14(frame: pd.DataFrame) -> float | None:
+    """Return the latest Wilder 14-session ATR from completed daily bars."""
+    required = {"high", "low", "close"}
+    if frame.empty or not required.issubset(frame.columns):
+        return None
+    previous_close = frame["close"].shift(1)
+    true_range = pd.concat(
+        [
+            frame["high"] - frame["low"],
+            (frame["high"] - previous_close).abs(),
+            (frame["low"] - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    value = true_range.ewm(alpha=1 / 14, adjust=False).mean().iloc[-1]
+    return None if pd.isna(value) else float(value)
+
+
+def validate_close_bins(
+    close_bins: list[dict],
+    interval_convention: str = "lower_inclusive_upper_exclusive",
+) -> list[str]:
+    """Validate the settlement axis without introducing ranking weights."""
     errors: list[str] = []
-    names = [row.get("name") for row in scenarios]
+    names = [row.get("name") for row in close_bins]
     if sorted(names) != sorted(SCENARIO_NAMES):
-        errors.append(f"scenario names must be {list(SCENARIO_NAMES)}, got {names}")
-    if any(not row.get("direction") for row in scenarios):
-        errors.append("every scenario must declare direction explicitly")
-    if any(float(row.get("weight", 0)) < 0 for row in scenarios):
-        errors.append("scenario weights cannot be negative")
+        errors.append(f"close-bin names must be {list(SCENARIO_NAMES)}, got {names}")
+    if any("weight" in row for row in close_bins):
+        errors.append("close bins must not contain weights")
+    if any(not row.get("direction") for row in close_bins):
+        errors.append("every close bin must declare direction explicitly")
     expected_directions = {
         "downside_continuation": "bearish",
         "range_oscillation": "neutral",
         "upside_breakout": "bullish",
         "tail_extreme_down": "bearish",
     }
-    for row in scenarios:
+    for row in close_bins:
         expected = expected_directions.get(row.get("name"))
         if expected and row.get("direction") != expected:
             errors.append(f"{row.get('name')} direction must be {expected}")
     try:
         ordered = sorted(
-            [(row.get("name"), float(row["lower"]), float(row["upper"])) for row in scenarios],
+            [(row.get("name"), float(row["lower"]), float(row["upper"])) for row in close_bins],
             key=lambda item: item[1],
         )
     except (KeyError, TypeError, ValueError):
-        return errors + ["scenario lower/upper must be numeric"]
+        return errors + ["close-bin lower/upper must be numeric"]
     if interval_convention != "lower_inclusive_upper_exclusive":
         errors.append("only lower_inclusive_upper_exclusive is supported")
     for left, right in zip(ordered, ordered[1:]):
         if not np.isclose(left[2], right[1]):
-            errors.append(f"scenario boundary mismatch or overlap: {left[0]} upper={left[2]} vs {right[0]} lower={right[1]}")
-    if ordered and ordered[0][1] > -1e300:
-        # A finite lower bound is required for machine scoring; use 0 rather than -inf.
-        if ordered[0][1] > 0:
-            errors.append("first scenario must start at or below zero")
-    if abs(sum(float(row.get("weight", 0)) for row in scenarios) - 1.0) > 1e-9:
-        errors.append("scenario weights must sum to 1.0 exactly")
+            errors.append(
+                f"close-bin boundary mismatch or overlap: {left[0]} "
+                f"upper={left[2]} vs {right[0]} lower={right[1]}"
+            )
+    if ordered and ordered[0][1] > 0:
+        errors.append("first close bin must start at or below zero")
     return errors
 
 

@@ -1,25 +1,5 @@
 #!/usr/bin/env python3
-"""记分账本：累积检验方向与收盘分箱。
-
-为什么必须存在：
-输出契约要求“统计实际结果落在最高权重分支的比例，并单独报告区间覆盖与弃权”，
-但旧流程没有载体累积这些数字。结果是同一类权重
-偏差连续多日重复出现而无人察觉 —— 方向判断可以连着对，情景权重却可以连着错。
-
-记录格式（jsonl，每行一条预判）：
-{"target_date","generated_at","prediction_type","ruleset_version","structural_bias",
- "window_state","direction","execution_state",
- "scenarios":[{"name","direction","weight","lower","upper"}],
- "targets":[{"name","level","direction"}]}
-
-`prediction_type`：`prospective`（当时事前生成）或 `backfill`（事后补做）。
-补做记录会一并结算，但**不计入**方向正确率与最高权重分支命中率——补做时结果已可见，
-混入统计会系统性高估方法表现。
-
-用法：
-python3 scripts/scorecard.py --log forecasts.jsonl --index-daily <csv> \
-    [--append <record.json>] --output <dir>
-"""
+"""Settle legacy weighted forecasts and new weight-free path forecasts separately."""
 
 from __future__ import annotations
 
@@ -43,58 +23,104 @@ def load_index(path: str) -> pd.Series:
     return load_index_frame(path)["close"]
 
 
-def score_execution(record: dict, bars: pd.DataFrame) -> dict | None:
-    """Score a defensive/additive execution bias from the target open onward."""
-    overlay = record.get("execution_overlay")
-    if not isinstance(overlay, dict):
-        return None
+def matched_close_bin(close: float, close_bins: list[dict]) -> str | None:
+    ordered = sorted(close_bins, key=lambda row: float(row["lower"]))
+    for index, row in enumerate(ordered):
+        upper_ok = close <= float(row["upper"]) if index == len(ordered) - 1 else close < float(row["upper"])
+        if close >= float(row["lower"]) and upper_ok:
+            return str(row["name"])
+    return None
+
+
+def zone_distance(value: float, zone: dict) -> float:
+    lower = float(zone["lower"])
+    upper = float(zone["upper"])
+    return round(max(lower - value, value - upper, 0.0), 4)
+
+
+def inside(value: float, zone: dict) -> bool:
+    return float(zone["lower"]) <= value <= float(zone["upper"])
+
+
+def settle_path(record: dict, bars: pd.DataFrame) -> dict | None:
     target = pd.Timestamp(record["target_date"])
     if target not in bars.index:
         return None
+    prior = bars[bars.index < target]
+    if prior.empty:
+        return None
     row = bars.loc[target]
-    required = ("open", "high", "low", "close")
-    if any(column not in row or pd.isna(row[column]) for column in required):
+    if any(column not in row or pd.isna(row[column]) for column in ("open", "high", "low", "close")):
+        return None
+    path = record.get("next_day_path") or {}
+    opening = path.get("opening") or {}
+    intraday = path.get("intraday") or {}
+    close_zone = path.get("close") or {}
+    if not opening or not intraday or not close_zone:
         return None
     open_price = float(row["open"])
     high = float(row["high"])
     low = float(row["low"])
     close = float(row["close"])
-    if open_price <= 0:
-        return None
-    no_action_return = close / open_price - 1
-    judgement = record.get("llm_judgement") or {}
-    bias = judgement.get("execution_action") or record.get("action_bias") or overlay.get("execution_bias")
-    if bias == "reduce_only":
-        action_return = 0.0
-        avoided_close_drawdown = max(0.0, -no_action_return)
-        missed_upside = max(0.0, no_action_return)
-        avoided_intraday_drawdown = max(0.0, -(low / open_price - 1))
-    elif bias == "add_only_after_confirmation":
-        action_return = no_action_return
-        avoided_close_drawdown = 0.0
-        missed_upside = 0.0
-        avoided_intraday_drawdown = 0.0
+    prior_close = float(prior["close"].iloc[-1])
+    close_bins = record.get("close_bins") or []
+    realized_branch = matched_close_bin(close, close_bins)
+    band = (record.get("level_context") or {}).get("decision_band") or {}
+    support = float(band["support_defense"])
+    pressure = float(band["pressure_defense"])
+    if close < support:
+        realized_location = "below_support"
+    elif close > pressure:
+        realized_location = "above_pressure"
     else:
-        return None
+        position = (close - support) / (pressure - support)
+        realized_location = "lower_edge" if position <= 0.25 else "upper_edge" if position >= 0.75 else "center"
+    if realized_location in ("below_support", "lower_edge"):
+        realized_character = "weak"
+    elif realized_location in ("above_pressure", "upper_edge"):
+        realized_character = "strong"
+    else:
+        realized_character = "balanced"
+    range_quality = str(band.get("range_quality") or "unknown")
+    fragile_range_coverage = bool(
+        realized_branch == "range_oscillation"
+        and range_quality in ("wide", "extreme_wide")
+        and realized_location in ("lower_edge", "upper_edge")
+    )
     return {
-        "risk_state": judgement.get("risk_state") or overlay.get("risk_state"),
-        "execution_bias": bias,
+        "schema": "path_v1",
+        "prediction_type": record.get("prediction_type", "prospective"),
+        "ruleset_version": record.get("ruleset_version"),
+        "target_date": record["target_date"],
+        "prior_close": prior_close,
         "open": open_price,
         "high": high,
         "low": low,
         "close": close,
-        "no_action_open_to_close_return": round(no_action_return, 6),
-        "execution_open_to_close_return": round(action_return, 6),
-        "avoided_close_drawdown": round(avoided_close_drawdown, 6),
-        "avoided_intraday_drawdown_from_open": round(avoided_intraday_drawdown, 6),
-        "missed_upside": round(missed_upside, 6),
-        "defensive_false_positive": bool(
-            bias == "reduce_only" and no_action_return >= 0 and low >= open_price
+        "pct_chg": round((close / prior_close - 1) * 100, 4),
+        "open_zone_hit": inside(open_price, opening),
+        "open_zone_distance": zone_distance(open_price, opening),
+        "intraday_range_covered": low >= float(intraday["lower"]) and high <= float(intraday["upper"]),
+        "intraday_overshoot": round(
+            max(float(intraday["lower"]) - low, high - float(intraday["upper"]), 0.0),
+            4,
         ),
+        "close_zone_hit": inside(close, close_zone),
+        "close_zone_distance": zone_distance(close, close_zone),
+        "realized_branch": realized_branch or "in_gap",
+        "expected_close_location": close_zone.get("location"),
+        "realized_close_location": realized_location,
+        "close_location_hit": realized_location == close_zone.get("location"),
+        "expected_close_character": close_zone.get("character"),
+        "realized_close_character": realized_character,
+        "close_character_hit": realized_character == close_zone.get("character"),
+        "range_quality": range_quality,
+        "fragile_range_coverage": fragile_range_coverage,
+        "path_order_status": "unavailable_from_daily_ohlc",
     }
 
 
-def settle(record: dict, closes: pd.Series) -> dict | None:
+def settle_legacy(record: dict, closes: pd.Series) -> dict | None:
     target = pd.Timestamp(record["target_date"])
     if target not in closes.index:
         return None
@@ -105,29 +131,23 @@ def settle(record: dict, closes: pd.Series) -> dict | None:
     close = float(closes.loc[target])
     realized_direction = "up" if close > prior_close else "down" if close < prior_close else "flat"
     by_direction = {"bullish": "up", "bearish": "down", "neutral": "neutral"}
-    expected = by_direction.get(record.get("direction"), None)
+    expected = by_direction.get(record.get("direction"))
     direction_hit = realized_direction == expected if expected in ("up", "down") else None
-
     scenarios = record.get("scenarios", [])
     matched = None
-    ordered_scenarios = sorted(
-        scenarios,
-        key=lambda row: float(row.get("lower", float("-inf"))),
-    )
-    for index, scenario in enumerate(ordered_scenarios):
+    ordered = sorted(scenarios, key=lambda row: float(row.get("lower", float("-inf"))))
+    for index, scenario in enumerate(ordered):
         lower = scenario.get("lower")
         upper = scenario.get("upper")
         if lower is None or upper is None:
             continue
-        lower_ok = close >= lower
-        upper_ok = close <= upper if index == len(ordered_scenarios) - 1 else close < upper
-        if lower_ok and upper_ok:
+        upper_ok = close <= upper if index == len(ordered) - 1 else close < upper
+        if close >= lower and upper_ok:
             matched = scenario["name"]
             break
-    top_weight = max(scenarios, key=lambda s: s.get("weight", 0))["name"] if scenarios else None
-    weights = {s["name"]: float(s.get("weight", 0)) for s in scenarios}
-
+    top_weight = max(scenarios, key=lambda row: row.get("weight", 0))["name"] if scenarios else None
     return {
+        "schema": "legacy_weighted",
         "prediction_type": record.get("prediction_type", "prospective"),
         "ruleset_version": record.get("ruleset_version"),
         "target_date": record["target_date"],
@@ -137,117 +157,85 @@ def settle(record: dict, closes: pd.Series) -> dict | None:
         "realized_direction": realized_direction,
         "expected_direction": expected,
         "direction_hit": direction_hit,
-        "realized_branch": matched if matched else "in_gap（落在分支之间）",
+        "realized_branch": matched if matched else "in_gap",
         "top_weight_branch": top_weight,
         "top_weight_hit": None if matched is None else matched == top_weight,
-        "branch_weights": weights,
-        "targets_declared": [t.get("name") for t in record.get("targets", [])],
+        "branch_weights": {row["name"]: float(row.get("weight", 0)) for row in scenarios},
+        "targets_declared": [row.get("name") for row in record.get("targets", [])],
     }
 
 
+def settle(record: dict, bars_or_closes: pd.DataFrame | pd.Series) -> dict | None:
+    if "next_day_path" in record:
+        if not isinstance(bars_or_closes, pd.DataFrame):
+            return None
+        return settle_path(record, bars_or_closes)
+    closes = bars_or_closes["close"] if isinstance(bars_or_closes, pd.DataFrame) else bars_or_closes
+    return settle_legacy(record, closes)
+
+
+def ratio(rows: list[dict], field: str) -> float | None:
+    return None if not rows else round(sum(bool(row.get(field)) for row in rows) / len(rows), 3)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Forecast scorecard with cumulative weight test")
-    parser.add_argument("--log", required=True, help="forecasts.jsonl")
+    parser = argparse.ArgumentParser(description="分别结算旧版方向记录与新版路径记录")
+    parser.add_argument("--log", required=True)
     parser.add_argument("--index-daily", required=True)
-    parser.add_argument("--append", help="追加一条预判记录（json 文件）后再结算")
+    parser.add_argument("--append")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-
     log_path = Path(args.log)
     if args.append:
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(json.loads(Path(args.append).read_text(encoding="utf-8")), ensure_ascii=False) + "\n")
-
     records = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     bars = load_index_frame(args.index_daily)
-    closes = bars["close"]
     settled = []
     for record in records:
-        row = settle(record, closes)
+        row = settle(record, bars)
         if not row:
             continue
-        execution = score_execution(record, bars)
-        if execution is not None:
-            row["execution_score"] = execution
         settled.append(row)
-    pending = [r["target_date"] for r in records if pd.Timestamp(r["target_date"]) not in closes.index]
-
-    prospective = [r for r in settled if r.get("prediction_type", "prospective") == "prospective"]
-    backfill_all = [r for r in records if r.get("prediction_type", "prospective") == "backfill"]
-
-    if prospective:
-        direction_rows = [r for r in prospective if r["direction_hit"] is not None]
-        branch_rows = [r for r in prospective if r["top_weight_hit"] is not None]
-        neutral_rows = [r for r in prospective if r.get("expected_direction") == "neutral"]
-        summary = {
-            "settled_count": len(prospective),
-            "backfill_count": len(backfill_all),
-            "backfill_dates": [r["target_date"] for r in backfill_all],
-            "excluded_from_scoring": "prediction_type=backfill",
-            "pending_dates": pending,
-            "direction_accuracy": None
-            if not direction_rows
-            else round(sum(bool(r["direction_hit"]) for r in direction_rows) / len(direction_rows), 3),
-            "top_weight_branch_hit_rate": None
-            if not branch_rows
-            else round(sum(bool(r["top_weight_hit"]) for r in branch_rows) / len(branch_rows), 3),
-            "in_gap_rate": round(sum(1 for r in prospective if r["realized_branch"].startswith("in_gap")) / len(prospective), 3),
-            "neutral_count": len(neutral_rows),
-            "abstention_rate": round(len(neutral_rows) / len(prospective), 3),
-            "rule": "权重是内部排序分数，不是概率；neutral 不计入方向命中但单独报告弃权率；in_gap > 0 必须重估区间。",
+    pending = [row["target_date"] for row in records if pd.Timestamp(row["target_date"]) not in bars.index]
+    prospective = [row for row in settled if row.get("prediction_type", "prospective") == "prospective"]
+    backfill = [row for row in records if row.get("prediction_type", "prospective") == "backfill"]
+    path_rows = [row for row in prospective if row.get("schema") == "path_v1"]
+    legacy_rows = [row for row in prospective if row.get("schema") == "legacy_weighted"]
+    summary = {
+        "settled_count": len(prospective),
+        "backfill_count": len(backfill),
+        "backfill_dates": [row["target_date"] for row in backfill],
+        "excluded_from_scoring": "prediction_type=backfill",
+        "pending_dates": pending,
+        "path_count": len(path_rows),
+        "legacy_count": len(legacy_rows),
+    }
+    if path_rows:
+        summary["path"] = {
+            "open_zone_hit_rate": ratio(path_rows, "open_zone_hit"),
+            "intraday_range_coverage": ratio(path_rows, "intraday_range_covered"),
+            "close_zone_hit_rate": ratio(path_rows, "close_zone_hit"),
+            "close_location_hit_rate": ratio(path_rows, "close_location_hit"),
+            "close_character_hit_rate": ratio(path_rows, "close_character_hit"),
+            "fragile_range_coverage_count": sum(bool(row["fragile_range_coverage"]) for row in path_rows),
+            "path_order_status": "daily OHLC 不推断盘中节点先后",
         }
-        execution_rows = [
-            row["execution_score"]
-            for row in prospective
-            if isinstance(row.get("execution_score"), dict)
-            and row["execution_score"].get("execution_bias") in ("reduce_only", "add_only_after_confirmation")
-        ]
-        if execution_rows:
-            summary["execution"] = {
-                "scored_count": len(execution_rows),
-                "reduce_only_count": sum(
-                    row["execution_bias"] == "reduce_only" for row in execution_rows
-                ),
-                "avg_avoided_close_drawdown": round(
-                    sum(row["avoided_close_drawdown"] for row in execution_rows)
-                    / len(execution_rows),
-                    6,
-                ),
-                "avg_avoided_intraday_drawdown_from_open": round(
-                    sum(row["avoided_intraday_drawdown_from_open"] for row in execution_rows)
-                    / len(execution_rows),
-                    6,
-                ),
-                "avg_missed_upside": round(
-                    sum(row["missed_upside"] for row in execution_rows)
-                    / len(execution_rows),
-                    6,
-                ),
-                "defensive_false_positive_count": sum(
-                    bool(row["defensive_false_positive"]) for row in execution_rows
-                ),
-                "no_action_baseline": "close/open-1 from the target open",
-                "rule": "防守动作按目标日开盘执行；分别记录避开的跌幅、错过的涨幅和误报，不以单一方向命中代替执行评价。",
-            }
-    else:
-        summary = {"settled_count": 0, "backfill_count": len(backfill_all),
-                   "backfill_dates": [r["target_date"] for r in backfill_all],
-                   "pending_dates": pending}
-
+    if legacy_rows:
+        direction_rows = [row for row in legacy_rows if row["direction_hit"] is not None]
+        branch_rows = [row for row in legacy_rows if row["top_weight_hit"] is not None]
+        summary["legacy"] = {
+            "direction_accuracy": ratio(direction_rows, "direction_hit"),
+            "top_weight_branch_hit_rate": ratio(branch_rows, "top_weight_hit"),
+            "note": "仅用于旧版冻结记录，不与新版路径指标混算",
+        }
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     (output / "scorecard.json").write_text(
-        json.dumps({"summary": summary, "settled": settled}, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps({"summary": summary, "settled": settled}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    print("\n逐条：")
-    for row in settled:
-        print(
-            f"  {row['target_date']} 收 {row['close']:.2f}（{row['pct_chg']:+.2f}%） 方向 "
-            f"{'✅' if row['direction_hit'] else '❌' if row['direction_hit'] is not None else '—'} | "
-            f"实际分支 {row['realized_branch']} | 最高权重分支 {row['top_weight_branch']} "
-            f"{'✅' if row['top_weight_hit'] else '❌' if row['top_weight_hit'] is not None else '—'}"
-        )
     return 0
 
 

@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-"""极值状态的条件分布统计与状态专属反向分支下限。
+"""极值状态的条件分布统计，仅供大模型综合裁量引用。
 
-第 7 节规定：极值状态（breadth_extreme / funding_spike）触发时，反向（均值回复）分支
-权重不得低于 25%，且必须附同口径条件分布统计；样本不足 30 时只能写“样本不足”。
-此前只有要求、没有估计器，于是那条下限只是一个未经检验的先验 —— 本脚本把它算出来。
-
-输出：每个状态在 T+1 / T+3 / T+5 的前瞻分布、P(方向反转)、与无条件基线的二项检验，
-以及一个 `recommended_reversal_floor`：只有在统计显著时才建议把下限提到 25% 以上。
+输出：每个状态在 T+1 / T+3 / T+5 的前瞻分布、P(方向反转)、与无条件基线的二项检验。
+样本不足时必须明确披露；统计显著性只作为证据，不能生成权重、概率、路径或执行结论。
 
 用法：
 python3 scripts/extreme_state_stats.py --index-daily <csv> [--margin <csv>] [--breadth <csv>] \
@@ -158,27 +154,17 @@ def main() -> int:
                 and entry.get("p_value_fwd1", 1) < 0.05
                 and entry.get("excess_fwd1_vs_baseline", 0) >= EXCESS_FOR_FLOOR
             )
+            entry["significant_reversal_edge"] = bool(has_edge)
             entry["verdict"] = (
                 "样本不足"
                 if entry["n"] < MIN_SAMPLE
-                else "有超额（该状态反向分支下限可升至 35%）"
+                else "同口径反向超额显著，仅供综合裁量"
                 if has_edge
-                else "无显著超额（反向分支下限维持 25%，不得据此提高）"
+                else "未见显著反向超额"
             )
-            entry["recommended_reversal_floor"] = 0.25 if not has_edge else 0.35
             rows.append(entry)
 
     table = pd.DataFrame(rows).sort_values(["state", "regime_filter"])
-    floors: dict[str, dict[str, float]] = {}
-    for row in rows:
-        floors.setdefault(row["state"], {})[row["regime_filter"]] = float(
-            row.get("recommended_reversal_floor", 0.25)
-        )
-    recommended_floor = 0.25
-    floor_note = (
-        "默认反向分支下限为25%。只有当前匹配状态在对应市场状态下样本≥30、"
-        "T+1超额≥5pp且p<0.05时，才允许该状态把下限提高到35%；不得跨状态借用。"
-    )
 
     result = {
         "ruleset_version": RULESET_VERSION,
@@ -197,9 +183,7 @@ def main() -> int:
         "baseline": baseline,
         "min_sample": MIN_SAMPLE,
         "states": rows,
-        "recommended_reversal_floor_by_state": floors,
-        "recommended_reversal_floor": recommended_floor,
-        "floor_note": floor_note,
+        "evidence_note": "条件统计只供综合裁量，不生成权重、概率、路径或执行结论；显著结果不得跨状态借用。",
         "caveats": [
             "重叠窗口：T+3 / T+5 的前瞻窗口互相重叠，有效样本小于名义 n，显著性以 T+1 为主判据",
             "条件状态定义使用分布尺度（收益60日 z 分数、宽度20日 z 分数、两融20日 σ），当前与历史口径一致",
@@ -211,7 +195,7 @@ def main() -> int:
     atomic_write_json(output / "extreme_state_stats.json", result)
     table.to_csv(output / "extreme_state_stats.csv", index=False)
 
-    print(json.dumps({"baseline": baseline, "recommended_reversal_floor": recommended_floor, "floor_note": floor_note}, ensure_ascii=False, indent=2))
+    print(json.dumps({"baseline": baseline, "state_count": len(rows), "evidence_note": result["evidence_note"]}, ensure_ascii=False, indent=2))
     print()
     columns = ["state", "regime_filter", "n", "fwd1_mean", "fwd1_P_up", "excess_fwd1_vs_baseline", "p_value_fwd1", "fwd3_mean", "verdict"]
     print(table[columns].to_string(index=False))
